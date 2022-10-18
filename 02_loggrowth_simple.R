@@ -40,7 +40,7 @@ plot(results$time, results$N,
 clim.df <- read.csv("./data/clim.df.csv")
 
 tstart <- round(runif(1, min = 3000, max = 5000))
-npp_limits <- sort(runif(2, min = 0.005, max = 0.04))
+npp_limits <- sort(runif(2, min = 0.1, max = 0.8))
 npp_lo <- npp_limits[1]
 npp_hi <- npp_limits[2]
 cK0 <- round(runif(1, min = 2, max = 10))
