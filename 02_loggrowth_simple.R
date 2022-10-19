@@ -36,7 +36,11 @@ results <- log_growth(N0 = myN0,
 plot(results$time, results$N, 
      type = 'l')
 
+
+
 ## Try with random parameters
+## this will give us the parameters to use for hte model run - we will want to set up some sort of procedure that will grab n values
+## for each of these
 clim.df <- read.csv("./data/clim.df.csv")
 
 tstart <- round(runif(1, min = 3000, max = 5000))
@@ -49,19 +53,22 @@ Kmax <- exp(runif(1, min = log(100), max = log(10000)))
 ## Kmax: max carrying capacity
 
 ## NPP - K relationship
+## this will set the relationship between NPP and k based upon the sampled values from above for npp low and hi
 plot.df <- data.frame(npp = c(min(clim.df$npp), npp_lo, npp_hi, max(clim.df$npp)),
                       K = c(0, 0, Kmax, Kmax))
 ggplot(plot.df, aes(x = npp, y = K)) +
   geom_line()
 
 ## Derive time-dependent K
+## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
 ## First filter climate to tstart
-clim.df <- clim.df[clim.df$age < tstart, ]
+clim.df <- clim.df[clim.df$age < tstart, ] #
 time <- max(clim.df$age) - clim.df$age## Need to invert time somehow
 K_t <- approx(plot.df$npp, plot.df$K, clim.df$npp)$y
 plot(clim.df$age, K_t)
 
 ## New function with time dependent K
+## this provides log growth model that will output based upon the chosen parameter values and reading in k at each time step
 log_growth_t <- function(N0, r, K, time) {
   if (length(K) != length(time)) {stop("K and time have different legnths")}
   
