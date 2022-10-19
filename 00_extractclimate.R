@@ -24,7 +24,7 @@ clim.df <- data.frame(age = dates,
 clim.df <- clim.df %>%
   mutate(age = 22000 - age,
          t2m = t2m - 273.15,
-         pre = pre * (60 * 60 * 24 * 30 * 12 * 100))
+         pre = pre * (60 * 60 * 24 * 30 * 12 * 1000))
 
 ggplot(clim.df, aes(x = age, y = t2m)) +
   geom_line()

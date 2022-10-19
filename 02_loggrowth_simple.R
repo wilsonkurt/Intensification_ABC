@@ -16,7 +16,8 @@ log_growth <- function(N0, r, K, time) {
   N_t <- rep(NA, length(time))
   N_t <- N0
   for (i in 2:length(time)) {
-    N_t[i] = K / (1 + ((K - N0) / N0) * exp(-r * time[i]))
+    # N_t[i] = K / (1 + ((K - N0) / N0) * exp(-r * time[i]))
+    N_t[i] = N_t[i-1] + r * N_t[i-1] * (1 - (N_t[i-1] / K))
   }
   return(list(time = time,
               N = N_t))
@@ -39,7 +40,7 @@ plot(results$time, results$N,
 clim.df <- read.csv("./data/clim.df.csv")
 
 tstart <- round(runif(1, min = 3000, max = 5000))
-npp_limits <- sort(runif(2, min = 0.005, max = 0.04))
+npp_limits <- sort(runif(2, min = 0.1, max = 0.8))
 npp_lo <- npp_limits[1]
 npp_hi <- npp_limits[2]
 cK0 <- round(runif(1, min = 2, max = 10))
@@ -67,7 +68,9 @@ log_growth_t <- function(N0, r, K, time) {
   N_t <- rep(NA, length(time))
   N_t[1] <- N0
   for (i in 2:length(time)) {
-    N_t[i] = K[i] / (1 + ((K[i] - N0) / N0) * exp(-r * time[i]))
+    # N_t[i] = K[i] / (1 + ((K[i] - N0) / N0) * exp(-r * time[i]))
+    N_t[i] = N_t[i-1] + r * N_t[i-1] * (1 - (N_t[i-1] / K[i]))
+    
   }
   return(list(time = time,
               K = K,
