@@ -118,6 +118,7 @@ dat_cal.Plat.nnorm <- calibrate(plateau.14c$Date,
 
 #plot(dat_spd.Platnorm)
 #plot(dat_spd.Platnnorm)
+
 ```
 
 Check what binning will do
@@ -237,14 +238,11 @@ for (i in 1:nsim){
 }
 
 
-
-
 ```
 
 
-To begin matching simulations to our observed SPD data, we first begin by defining a target spd (this may need to be iterated/looped as done in Dinapoli)
+To begin matching simulations to our observed SPD data, we first begin by defining a target spd (this may need to be iterated/looped as done in Dinapoli) - alternatively, we might want to iterate this process say 100 or 1000 times to generate an SPD + confidence intervals to use as a data match.
 ```{r}
-#Add code to ignore if the model PrDens goes to NA at any point (which happens if we drop to a population of 0)
 
 #First, we can generate a target spd to match our simulations to - we do this using a thinning process so we use only 1 date per generated bin (from above)
 thin.df <- data.frame(RN = 1:length(Plat.bins), bins = Plat.bins)#make a dataframe with a numeric identifier for each bin
@@ -270,59 +268,44 @@ plot(target.spd.norm)
 plot(target.spd.nnorm)
 ```
 
-To be able to construct an spd from our simulated population data, we want to work with this in a 'CalGrid' format. (This will need to be looped for each of our simulation models - so to run for each param combo)
+Next, with the simulated model, we need to generate a summed probability distribution. The code below (along with the function in the simulatedmodelspds source file) allow us to do this. The spd recreation code is mostly replicated from Dinapoli et al 2021.
 ```{r}
-#Subset to a single model simulation run
-test.backcalib <- no.dups[which(no.dups$combo == 1),]
-test.backcalib <- test.backcalib[,c(1,4)]#grab just calbp and prdens
-#Make the dataframe into a CalGrids object
-class(test.backcalib) <- 'CalGrid'
+#setup for parallel processing & tracking progress
+ncores <- 10
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = nsim, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
 
+
+#Add code to ignore if the model PrDens goes to NA at any point (which happens if we drop to a population of 0)
+sim.spds <- foreach (i=55:56, .packages = c("rcarbon"), .options.snow = opts) %dopar%
+  {
+    #subset to a single model simulation run
+    model <- no.dups[which(no.dups$combo == i),]
+    param.combo <- unique(model$combo) #hold onto the unique parameter combo
+    model <- model[,c(1,4)]#grab just calbp and prdens from the model
+    #conver the model dataframe into a CalGrid object
+    class(model) <- 'CalGrid'
+
+#setup a unique identifier
 idCounter <- 0
 
-#Now create spds from our model simulated data
-d <- uncalibrate(test.backcalib, calCurves = 'intcal20', verbose = F)#uncalibrate the dates from the simulated growth model
-n.samples <- length(index)#we will sample the uncalibtrated dates equal to the unique bins
-errors <- sample(dat_cal.Plat.norm$metadata$Error, size = n.samples, replace =TRUE) #generate date errors by sampling from the observed errors of the actual dates
-uncal.samples <- sample(d$CRA, size = n.samples, prob = d$PrDens, replace = TRUE)#sample the n.samples (so # of dates) we had using that calcurve from the uncalibrated growth model output - weight the probability of selection by the PrDens of the growth model output
-cal.samples <- sample(d$CRA, size = n.samples, prob = d$Raw, replace = TRUE)#do the same thing, but instead of weighting hte probability by the PrDens, weight by the Raw output from the uncalibrate process
-ids <- idCounter + (1:n.samples)#assign an ID (this will just be a unique number from 1 to the total # samples we generated) 
-uncalsample.norm <- calibrate(uncal.samples, errors, calCurves = 'intcal20', ids = ids, normalised = TRUE, verbose = FALSE) #calibrate a new SPD using the artificial 14c dates sampled from the growthModel output based on sampling using PrDens while  normalising the SPD
-uncalsample.nnorm <- calibrate(uncal.samples, errors, calCurves = 'intcal20', ids = ids, normalised = FALSE, verbose = FALSE) #calibrate a new SPD using the artificial 14c dates sampled from the growthModel output based on sampling using Raw while not normalising the SPD
-calsample.norm <- calibrate(cal.samples, errors, calCurves = 'intcal20', ids = ids, normalised = TRUE, verbose = FALSE)#calibrate a new SPD using the artificial 14c dates sampled from the growthModel output based on sampling using Raw while normalising the SPD
-calsample.nnorm <- calibrate(cal.samples, errors, calCurves = 'intcal20', ids = ids, normalised = FALSE, verbose = FALSE) #calibrate a new SPD using the artificial 14c dates sampled from the growthModel output based on sampling using Raw while not normalising the SPD
+set.seed(i)
+    model.spds <- createmodelspd(model=model)
+    return(model.spds)
+    
+  }
 
-#Now make an spd using the resampled dates for each of normalised, not normalised, and each version of back calculating 14c dates
-spd.uncalsample.norm <- spd(uncalsample.norm, timeRange = c(5000,0), spdnormalised = TRUE, verbose = FALSE)
-spd.uncalsample.nnorm <- spd(uncalsample.nnorm, timeRange = c(5000,0), spdnormalised = TRUE, verbose = FALSE)
-spd.calsample.norm <- spd(calsample.norm, timeRange = c(5000,0), spdnormalised = TRUE, verbose = FALSE)
-spd.calsample.nnorm <- spd(calsample.nnorm, timeRange = c(5000,0), spdnormalised = TRUE, verbose = FALSE)
-
-
-plot(rev(spd.uncalsample.norm$grid$PrDens) ~ rev(spd.uncalsample.norm$grid$calBP), type = "l")
-plot(rev(spd.uncalsample.nnorm$grid$PrDens) ~ rev(spd.uncalsample.nnorm$grid$calBP), type = "l")
-plot(rev(spd.calsample.norm$grid$PrDens) ~ rev(spd.calsample.norm$grid$calBP), type = "l")
-plot(rev(spd.calsample.nnorm$grid$PrDens) ~ rev(spd.calsample.nnorm$grid$calBP), type = "l")
-
+stopCluster(cl)
 ```
 
-Below is the version of the logistic growth equation used by Porcic et al. 2016 & 2021
+We can then plot the log growth model spds to see how they look.
 ```{r}
+plot(sim.spds[[1]]$ucs.norm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Uncalibrate, Normalised")
+plot(sim.spds[[1]]$ucs.nnorm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Uncalibrate, Not Normalised")
+plot(sim.spds[[1]]$cs.norm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Calibrate, Normalised")
+plot(sim.spds[[1]]$cs.nnorm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Calibrate, Not Normalised")
 
-Pop <- function(k,p0,r,t){
-  (k*p0*exp(r*t)) / (k +(p0*(exp(r*t) - 1)))
-}
-
-#k = carrying capacity (we will decompose this to be climate and intensification)
-#this is also where we can put the if intensification has begun yet or not
-#p0 = population at time 0
-#r = population growth rate
-#t = current time step
-
-
-
-plot(Pop(5000, 2, 0.005, seq(0,5000,10)), type = "l")
-
-plot(Pop(5000, 2, 0.0025, seq(0,5000,10)), type = "l")
-
-```     
+```
