@@ -19,6 +19,11 @@ library(doSNOW)#parallel processing
 library(utils) #for progress bars
 library(rcarbon)#14c date calibration and spd recreation
 library(foreach)
+
+source("03_loggrowthmodel.R")
+source("04_simulatedmodelspds.R")
+
+
 ```
 
 
@@ -200,16 +205,33 @@ Save these to a csv so the code does not have to be rerun
 
 #write.csv(observed.spds, "Observed_spds_1000reps.csv")
 
-observed.spds <- read.csv("Observed_spds_1000reps.csv")
+observed.spds <- read.csv("./data/Observed_spds_1000reps.csv")
+
+observed.spds[,2004]
+
+observed.spds.norm <- observed.spds[,c(1,seq(2,2002,2))]#grab the normalized spds and put in own object
+observed.spds.nnorm <- observed.spds[,c(1,seq(3,2003,2))]#make a df for the not normalized spds
 ```
 
 Plot the observed spds
 ```{r}
 
+par(mfrow = c(1,2))
+plot(observed.spds.norm$norm.PrDens~observed.spds.norm$calBP, type = "l", col = alpha("grey50", alpha = 0.25), ylab = "Summed Probability (Normalized)", xlab = "CalBP", ylim = c(0, 0.0008))
+for (i in 2:1002) {
+  lines(observed.spds.norm[,i]~observed.spds.norm$calBP, col = alpha("grey50", alpha = 0.25))
+}
+
+plot(observed.spds.nnorm$nnorm.PrDens~observed.spds.nnorm$calBP, type = "l", col = alpha("grey50", alpha = 0.25), ylab = "Summed Probability (Normalized)", xlab = "CalBP", ylim = c(0,0.0008))
+for (i in 2:1002) {
+  lines(observed.spds.nnorm[,i]~observed.spds.nnorm$calBP, col = alpha("grey50", alpha = 0.25))
+}
 
 ```
 
+Here we can see the outcome of 1000 iterations of each the normalised and not normalised observed spd. This gives us 1000 possible recreations of the 'true' spd. As we can see, the shape and direction does not change between the samples, but there is variation in the band. Thus we will match to the range of this variation.
 
+Next we can visualize the environmental trends over the same period.
 Plot the averaged precip per month for each of the regions
 ```{r}
 plot(plateau.clim$MoAvgPrecip~plateau.clim$calBP, type = "l", lwd = 2, col = cp.col, ylim = c(22, 34), ylab = "Avg. Mo. Precip.", xlab = "CalBP")
@@ -284,7 +306,7 @@ pb <- txtProgressBar(max = nsim, style = 3)
 progress <- function(n) setTxtProgressBar(pb, n)
 opts <- list(progress = progress)
 
-nsim <- 10
+nsim <- 50
 
 results <- data.frame()
 #class(results) <- 'CalGrid'
@@ -311,14 +333,15 @@ g.model.res <- foreach(i = 1:nsim, .options.snow = opts) %dopar%
     #sim.growthModel <- log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time)
 
     sim.growthModel$combo <- i
-    results <- rbind(results, sim.growthModel)
-    
+    #results <- rbind(results, sim.growthModel)
+    return(sim.growthModel)
   }
 
 
 stopCluster(cl)
 
 results<- do.call('rbind.data.frame', g.model.res)
+
 
 ```
 
@@ -328,27 +351,15 @@ This gives us a population size estimate and a PrDens for each year in the simul
 
 #then do a for loop to plot the lines for N~time for each model
 
-
-#First though, we will remove duplicated simulation runs (for some reason duplication is happening)
-no.dups <- data.frame()
-for (i in 1:nsim) {
-  
-  single.res <- subset(results, results$combo == i)
-  single.res <- single.res[!duplicated(single.res[, "CalBP"]),]
-  no.dups <- rbind(no.dups, single.res)
-}
-
-plot(NULL,xlim = c(0, max(no.dups$CalBP)), ylim = c(0, max(no.dups$N, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP")
+plot(NULL,xlim = c(0, max(results$CalBP)), ylim = c(0, max(results$N, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP")
 for (i in 1:nsim){
-  lines(subset(no.dups$N, no.dups$combo == i) ~ subset(no.dups$CalBP, no.dups$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+  lines(subset(results$N, results$combo == i) ~ subset(results$CalBP, results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
 }
-
-no.dups[which(no.dups$combo == 1),]
 
 ```
 
 
-Next, with the simulated model, we need to generate a summed probability distribution. The code below (along with the function in the simulatedmodelspds source file) allow us to do this. The spd recreation code is mostly replicated from Dinapoli et al 2021.
+Next, with the simulated model, we need to generate a summed probability distribution. The code below (along with the function in the simulated modelspds source file) allow us to do this. The spd recreation code is mostly replicated from Dinapoli et al 2021.
 ```{r}
 #setup for parallel processing & tracking progress
 ncores <- 10
@@ -358,12 +369,11 @@ pb <- txtProgressBar(max = nsim, style = 3)
 progress <- function(n) setTxtProgressBar(pb, n)
 opts <- list(progress = progress)
 
-
 #Add code to ignore if the model PrDens goes to NA at any point (which happens if we drop to a population of 0)
-sim.spds <- foreach (i=55:56, .packages = c("rcarbon"), .options.snow = opts) %dopar%
+sim.spds <- foreach (i=25:25, .packages = c("rcarbon"), .options.snow = opts) %dopar%
   {
     #subset to a single model simulation run
-    model <- no.dups[which(no.dups$combo == i),]
+    model <- results[which(results$combo == i),]
     param.combo <- unique(model$combo) #hold onto the unique parameter combo
     model <- model[,c(1,4)]#grab just calbp and prdens from the model
     #conver the model dataframe into a CalGrid object
@@ -379,8 +389,8 @@ set.seed(i)
   }
 
 stopCluster(cl)
-```
 
+```
 We can then plot the log growth model spds to see how they look.
 ```{r}
 plot(sim.spds[[1]]$ucs.norm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Uncalibrate, Normalised")
