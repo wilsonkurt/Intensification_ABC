@@ -22,7 +22,7 @@ library(foreach)
 
 source("03_loggrowthmodel.R")
 source("04_simulatedmodelspds.R")
-
+source("05_exportbestmodelspds.R")
 
 ```
 
@@ -207,8 +207,6 @@ Save these to a csv so the code does not have to be rerun
 
 observed.spds <- read.csv("./data/Observed_spds_1000reps.csv")
 
-observed.spds[,2004]
-
 observed.spds.norm <- observed.spds[,c(1,seq(2,2002,2))]#grab the normalized spds and put in own object
 observed.spds.nnorm <- observed.spds[,c(1,seq(3,2003,2))]#make a df for the not normalized spds
 ```
@@ -296,7 +294,7 @@ ggplot(plot.df, aes(x = npp, y = K)) +
 
 ```
 
-Run the model
+Run the model and generate the distance measure outputs
 ```{r}
 #setup for parallel processing & tracking progress
 ncores <- 10
@@ -306,12 +304,7 @@ pb <- txtProgressBar(max = nsim, style = 3)
 progress <- function(n) setTxtProgressBar(pb, n)
 opts <- list(progress = progress)
 
-nsim <- 50
-
-results <- data.frame()
-#class(results) <- 'CalGrid'
-
-g.model.res <- foreach(i = 1:nsim, .options.snow = opts) %dopar%
+g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon", .options.snow = opts) %dopar%
   {
 
     #establish npp boundary conditions
@@ -328,11 +321,77 @@ g.model.res <- foreach(i = 1:nsim, .options.snow = opts) %dopar%
     
     set.seed(i)
     sim.growthModel <- data.frame(log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time))
-
+    sim.growthModel[,c(1,4)]
+    class(sim.growthModel) <- 'CalGrid'
+    param.combo <- params$combo[i] #hold onto the unique parameter combo
+    results <- createmodelspd(model = sim.growthModel)#create simulated spd from simulate growth model, need to use just calBP and PrDens
+    return(results)
+    
     #this line of code would be used to do the direct Dinapoli et al approach
     #sim.growthModel <- log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time)
 
-    sim.growthModel$combo <- i
+  }
+
+
+stopCluster(cl)
+
+eval.results<- do.call('rbind.data.frame', g.model.res)
+
+```
+Select the top performing models
+```{r}
+no.models.keep <- 5
+
+#get the top 5 performing models from each measure
+top.params.eucun <- eval.results[order(eval.results$euc.uncal.norm),][1:no.models.keep,]
+top.params.eucunn <- eval.results[order(eval.results$euc.uncal.nnorm),][1:no.models.keep,]
+top.params.ecun <- eval.results[order(eval.results$euc.cal.norm),][1:no.models.keep,]
+top.params.ecunn <- eval.results[order(eval.results$euc.cal.nnorm),][1:no.models.keep,]
+top.params.nrmseun <- eval.results[order(eval.results$nrmse.uncal.norm),][1:no.models.keep,]
+top.params.nrmseunn <- eval.results[order(eval.results$nrmse.uncal.nnorm),][1:no.models.keep,]
+top.params.nrmsecn <- eval.results[order(eval.results$nrmse.cal.norm),][1:no.models.keep,]
+top.params.nrmsecnn <- eval.results[order(eval.results$nrmse.cal.nnorm),][1:no.models.keep,]
+
+```
+
+We can then rerun the model for just the best performing parameter combinations
+```{r}
+
+#first, select the parameter combinations of interest
+best.params <- params[params$combo %in% top.params.ecun$param.combo,]
+best.params <- rbind(best.params, params[params$combo %in% top.params.eucunn$param.combo,], params[params$combo %in% top.params.ecun$param.combo,],params[params$combo %in% top.params.ecunn$param.combo,],params[params$combo %in% top.params.nrmseun$param.combo,],params[params$combo %in% top.params.nrmseunn$param.combo,],params[params$combo %in% top.params.nrmsecn$param.combo,],params[params$combo %in% top.params.nrmsecnn$param.combo,])
+
+
+#setup for parallel processing & tracking progress
+ncores <- 10
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = nsim, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+best.models.res <- foreach(i = 1:length(best.params[,1]), .options.snow = opts) %dopar%
+  {
+
+    #establish npp boundary conditions
+    npp.conds <- data.frame(npp = c(best.params$npp_lo[i], best.params$npp_hi[i], max(clim.df$npp)),
+                      K = c(0, best.params$Kmax[i], best.params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
+    
+    ## Derive time-dependent K
+    ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
+    ## First filter climate to tstart
+    clim.df <- clim.df[clim.df$age < tstart[i],] #
+    time <- max(clim.df$age) - clim.df$age## Need to invert time somehow
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp     from our climate reconstruction
+    #plot(clim.df$age, K_t)
+    
+    set.seed(i)
+    sim.growthModel <- data.frame(log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time))
+    
+    #this line of code would be used to do the direct Dinapoli et al approach
+    #sim.growthModel <- log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time)
+
+    sim.growthModel$combo <- best.params$combo[i]
     #results <- rbind(results, sim.growthModel)
     return(sim.growthModel)
   }
@@ -340,21 +399,78 @@ g.model.res <- foreach(i = 1:nsim, .options.snow = opts) %dopar%
 
 stopCluster(cl)
 
-results<- do.call('rbind.data.frame', g.model.res)
-
+best.results<- do.call('rbind.data.frame', best.models.res)
 
 ```
 
-This gives us a population size estimate and a PrDens for each year in the simulation. We can visualize this.
+We can then plot a population size estimate and a PrDens for each year in the simulation from the best performing models.
 ```{r}
 #make a blank plot with xlim as c(0, max(results$time) and ylim as c(0, max(results$N)))
 
 #then do a for loop to plot the lines for N~time for each model
 
-plot(NULL,xlim = c(0, max(results$CalBP)), ylim = c(0, max(results$N, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP")
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Pop as PrDens", xlab = "CalBP")
 for (i in 1:nsim){
-  lines(subset(results$N, results$combo == i) ~ subset(results$CalBP, results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
 }
+
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$N, na.rm = TRUE)), ylab = "Total Population Size", xlab = "CalBP")
+for (i in 1:nsim){
+  lines(subset(best.results$N, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+```
+
+We can also plot the top performing models for each distance metric
+```{r}
+#euc uncal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC UNCAL NORM")
+for (i in 1:no.models.keep){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#euc uncal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC UNCAL NNORM")
+for (i in (no.models.keep+1):(no.models.keep*2)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#euc cal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC CAL NORM")
+for (i in (no.models.keep*2+1):(no.models.keep*3)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#euc cal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC CAL NNORM")
+for (i in (no.models.keep*3+1):(no.models.keep*4)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME uncal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME UNCAL NORM")
+for (i in (no.models.keep*4+1):(no.models.keep*5)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME uncal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME UNCAL NNORM")
+for (i in (no.models.keep*5+1):(no.models.keep*6)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME cal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME CAL NORM")
+for (i in (no.models.keep*6+1):(no.models.keep*7)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME cal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME CAL NNORM")
+for (i in (no.models.keep*7+1):(no.models.keep*8)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+    
 
 ```
 
@@ -365,25 +481,25 @@ Next, with the simulated model, we need to generate a summed probability distrib
 ncores <- 10
 cl <- makeCluster(ncores)
 registerDoSNOW(cl)
-pb <- txtProgressBar(max = nsim, style = 3)
+pb <- txtProgressBar(max = length(best.params[,1]), style = 3)
 progress <- function(n) setTxtProgressBar(pb, n)
 opts <- list(progress = progress)
 
 #Add code to ignore if the model PrDens goes to NA at any point (which happens if we drop to a population of 0)
-sim.spds <- foreach (i=25:25, .packages = c("rcarbon"), .options.snow = opts) %dopar%
+best.sims.spds <- foreach (i=1:length(best.params[,1]), .packages = c("rcarbon"), .options.snow = opts) %dopar%
   {
     #subset to a single model simulation run
-    model <- results[which(results$combo == i),]
+    model <- best.results[which(best.results$combo == best.params$combo[i]),]
     param.combo <- unique(model$combo) #hold onto the unique parameter combo
     model <- model[,c(1,4)]#grab just calbp and prdens from the model
-    #conver the model dataframe into a CalGrid object
+    #convert the model dataframe into a CalGrid object
     class(model) <- 'CalGrid'
 
 #setup a unique identifier
 idCounter <- 0
 
 set.seed(i)
-    model.spds <- createmodelspd(model=model)
+    model.spds <- createbestmodelspd(model=model)
     return(model.spds)
     
   }
@@ -391,6 +507,8 @@ set.seed(i)
 stopCluster(cl)
 
 ```
+
+
 We can then plot the log growth model spds to see how they look.
 ```{r}
 plot(sim.spds[[1]]$ucs.norm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Uncalibrate, Normalised")
