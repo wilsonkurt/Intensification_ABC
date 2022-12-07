@@ -200,11 +200,12 @@ observed.spds <- observed.spds[, -seq(from = 4,to = length(observed.spds[1,]), b
 
 
 ```
+
 Save these to a csv so the code does not have to be rerun
 ```{r}
 
 #write.csv(observed.spds, "Observed_spds_1000reps.csv")
-
+#read in the saved spds
 observed.spds <- read.csv("./data/Observed_spds_1000reps.csv")
 
 observed.spds.norm <- observed.spds[,c(1,seq(2,2002,2))]#grab the normalized spds and put in own object
@@ -257,42 +258,67 @@ legend("topright", legend = c("Plateau", "Basin"), col = c(cp.col, gb.col), lty 
 Read in the climate data for model development
 ```{r}
 clim.df <- read.csv("./data/clim.df.csv")
-```
 
+
+```
 
 Establish parameter combinations
 ```{r}
-
+#Globals
 nsim <- 100 #set the number of parameter combinations to use
+tstart <- 5000 #set the beginning of the simulation to be 5000 yBP
 
+#Landscape variables
 npp_lo <- vector()#a vector to hold the npp min threshold for any population to be present
 npp_hi <- vector()#a vector to hold the npp max threshold over which no increase in k occurs (unless by intensification)
 for (i in 1:nsim) {
-  npp_limits <- sort(runif(2, min = 0.1, max = 0.8))#grab 2 npp values to be low and high and sort from low to high
+  npp_limits <- sort(runif(2, min = 0.1, max = 1.44))#grab 2 npp values to be low and high and sort from low to high
+  #the min npp during our study period is 0.4570309 while the max is 1.077869. We therefore randomly sample from values below the min to above the max. Min npp represents the min npp needed to support at least some population. Max represents the npp value at which the maximum k (without intensification) is reached. Any npp above that is essentially unusable by the population and doesn't result in larger k.
   npp_lo <- append(npp_lo, npp_limits[1])  
   npp_hi <- append(npp_hi, npp_limits[2])
 }
-tstart <- round(runif(nsim, min = 3000, max = 5000))#select the year in which intensification will begin
+
+#Intensification variables
+tseistart <- round(runif(nsim, min = 1800, max = 3500))#select the year in which intensification will begin
+SEI_max <- runif(nsim, min = 1, max = 50) #intensification multiplier (max amount of the multiplier that increases k with SEI)
+K_m <- 1 #this is the intensification constant applied to K_t on each time step. It is 1 b/c prior to SEI beginning, there is no SEI effect on K_t. But once SEI begins, it is a multiplier, so 1 + SEI at that moment will add to k.
+
+#Population variables
 cK0 <- round(runif(nsim, min = 2, max = 10))#set a starting population
 r <- exp(runif(nsim, min = log(0.01), max = log(0.5)))#set a population growth rate
 Kmax <- exp(runif(nsim, min = log(100), max = log(10000)))#set a maximum carrying capacity
 
 #make a dataframe to hold nsim parameter combinations
-params <- data.frame(tstart = tstart, r = r, cK0 = cK0, Kmax = Kmax, npp_lo = npp_lo, npp_hi = npp_hi)
+params <- data.frame(tstart = tstart, r = r, cK0 = cK0, Kmax = Kmax, npp_lo = npp_lo, npp_hi = npp_hi, tseistart = tseistart, SEI_max = SEI_max)
 params$combo <- 1:length(params$tstart)#set a unique parameter combination number so we can link outcomes to initial param values
 
+
+#eventually we want to add code that will alter the usable npp (and thereby the k) that can be returned to during a collapse in SEI - basically if farming is no longer viable, SEI may have altered what you can actually use, so you may not be able to to return to the same foraging k
+
+#also - perhaps we could use Blake's work looking at how the agricultural niche changes over time with shifting precip and temp regimes and use that to inform the npp to k relationship (future project that includes collapse)
+
+
+#Alternate SEI version where SEI happens at every time step (year) by adding a % to k but with a marginal decline (each year sees the k added by SEI shrink by some % so at some point there are no more gains to k)
+#SEI <- vector()
+#SEIdecline <- vector()
+#for (i in 1:nsim) {
+#  SEI_vals <- sort(runif(2, min = 0, max = 1)) #get 2 values between 0 and 1
+#  SEI <- append(SEI, SEI_vals[2]) #set the higher value as the % added to k each year after SEI begins
+#  SEIdecline <- append(SEIdecline, SEI_vals[1]) #set the lower value as the marginal decline (% loss) in effectiveness of SEI with each year
+#}
 
 ```
 
 Visualize the npp to k relationship
 ```{r}
 
-plot.df <- data.frame(npp = c(min(clim.df$npp), params$npp_lo[1], params$npp_hi[1], max(clim.df$npp)),
-                      K = c(0, 0, params$Kmax[1], params$Kmax[1]))
+plot.df <- data.frame(npp = c(min(clim.df$npp), params$npp_lo[2], params$npp_hi[2], max(clim.df$npp)),
+                      K = c(0, 0, params$Kmax[2], params$Kmax[2]))
 ggplot(plot.df, aes(x = npp, y = K)) +
   geom_line()
 
 ```
+
 
 Run the model and generate the distance measure outputs
 ```{r}
@@ -314,15 +340,16 @@ g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon", .options.snow = opts) 
     ## Derive time-dependent K
     ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
     ## First filter climate to tstart
-    clim.df <- clim.df[clim.df$age < tstart[i],] #
-    time <- max(clim.df$age) - clim.df$age## Need to invert time somehow
-    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp     from our climate reconstruction
+    clim.df.run <- clim.df[clim.df$age <= tstart & clim.df$age >= 0,] #get climate data from 5000 to 0 yBP
+    time <- clim.df.run$age
+    #time <- max(clim.df$age) - clim.df$age## Need to invert time
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df.run$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp from our climate reconstruction. This gives us the carrying capacity at each time step w/out any SEI occurring.
     #plot(clim.df$age, K_t)
     
     set.seed(i)
-    sim.growthModel <- data.frame(log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time))
-    sim.growthModel[,c(1,4)]
-    class(sim.growthModel) <- 'CalGrid'
+    sim.growthModel <- data.frame(log_growth_t(N0 = cK0[i], r = r[i], K = K_t, K_m = K_m, time = time, tseistart = params$tseistart[i], SEI_max = params$SEI_max[i])) #run the log growth model function
+    sim.growthModel[,c(1,4)] #select year and simulated PrDens
+    class(sim.growthModel) <- 'CalGrid' #change to a calgrid object
     param.combo <- params$combo[i] #hold onto the unique parameter combo
     results <- createmodelspd(model = sim.growthModel)#create simulated spd from simulate growth model, need to use just calBP and PrDens
     return(results)
@@ -338,6 +365,15 @@ stopCluster(cl)
 eval.results<- do.call('rbind.data.frame', g.model.res)
 
 ```
+
+```{r}
+
+
+plot(sim.growthModel$N~sim.growthModel$CalBP, type = "l")
+```
+
+
+
 Select the top performing models
 ```{r}
 no.models.keep <- 5
@@ -352,6 +388,30 @@ top.params.nrmseunn <- eval.results[order(eval.results$nrmse.uncal.nnorm),][1:no
 top.params.nrmsecn <- eval.results[order(eval.results$nrmse.cal.norm),][1:no.models.keep,]
 top.params.nrmsecnn <- eval.results[order(eval.results$nrmse.cal.nnorm),][1:no.models.keep,]
 
+```
+
+Working on code for adjusting K_t based upon SEI - this will need to be worked into the code above where we set K_t
+```{r}
+sei_k_fun <- function (SEI, SEIdecline, tseistart, ) {}
+
+data.frame(K = K_t, time = time)
+
+
+
+
+for (i in 1:10) {
+  K_new <- K_t[i] + (K_t[i] * SEI_new)
+  SEI
+  
+  
+}
+
+
+(0.5-(0.5*0.1))*1500
+
+1500+675
+
+2175 + (2175*(0.45 - (0.45*0.1)))
 ```
 
 We can then rerun the model for just the best performing parameter combinations
