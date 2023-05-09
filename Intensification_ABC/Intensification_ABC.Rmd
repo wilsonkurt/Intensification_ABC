@@ -1,0 +1,658 @@
+---
+title: "ABC_PopDynamic_Plateau_Basin"
+author: "Kurt M. Wilson & Simon C. Brewer"
+date: "2022-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the libraries
+```{r}
+library(viridis)#plotting
+library(scales)#plotting
+library(ggplot2)#plotting
+library(doParallel)#parallel processing
+library(doSNOW)#parallel processing
+library(utils) #for progress bars
+library(rcarbon)#14c date calibration and spd recreation
+library(foreach)
+library(truncnorm)#used in making prior probability distribution of r
+
+
+source("03_loggrowthmodel.R")
+source("04_simulatedmodelspds.R")
+source("05_exportbestmodelspds.R")
+
+```
+
+
+Read in data
+```{r}
+
+plateau.14c <- read.csv("./data/Plateau_dates_quality_controlled.csv") #8009 dates
+plat.14c.5k <- plateau.14c[which(plateau.14c$Date < 4001),] #5864 dates in last 4000 years
+
+basin.14c <- read.csv("./data/Basin_dates_quality_controlled.csv") #4157 dates
+basin.14c.5k <- basin.14c[which(basin.14c$Date < 4001),] #3362 dates in last 4000 years
+
+plateau.clim <- read.csv("./data/Plateau.clim.csv")
+basin.clim <- read.csv("./data/Basin.clim.csv")
+
+#Make plot colors
+cp.col <- rgb(59, 15, 112, max = 255)#purple
+gb.col <- rgb(96,206,172, max = 255)#teal
+```
+
+Notes about the data
+- Radiocarbon dates are those from the region (subset by the the outer boundaries of the watersheds), with any date with an error of > 100 removed. 
+
+First, we will calibrate the radiocarbon dates
+```{r calibrate}
+
+#calibrate all of the radiocarbon ages for the plateau
+dat_cal.Plat <- calibrate(plat.14c.5k$Date,#read the age as the 14C value
+                        errors = plat.14c.5k$Error,#the +- standard deviation
+                        calCurves = "intcal20"#check wich curve to use (SHCAL20 or MARINE20)
+                        )
+
+#repeat for the basin
+dat_cal.Basin <- calibrate(basin.14c.5k$Date,#read the age as the 14C value
+                        errors = basin.14c.5k$Error,#the +- standard deviation
+                        calCurves = "intcal20"#check wich curve to use (SHCAL20 or MARINE20)
+                        )
+```
+
+To evaluate how much influence there may be in over-representation of individual sites we can check the impact of binning dates at various intervals. Here we are going to check the past 4000 years and an impact of not binning, binning at 0, 500, 1000, 1500, and 2000 year intervals
+
+```{r binsense}
+
+
+
+Plat_binsense <- binsense(dat_cal.Plat,plat.14c.5k$Site_Name, h=seq(0,2000,500), timeRange = c(4000,0), runm = 100, calendar = "BP", binning = "calibrated")#check bins from 0 to 2000 in 500 year intervals using a 100 year running mean.
+
+Basin_binsense <- binsense(dat_cal.Basin,basin.14c.5k$Site_Name, h=seq(0,2000,500), timeRange = c(4000,0), runm = 100, binning = "calibrated", calendar = "BP")#check bins from 0 to 2000 in 500 year intervals using a 100 year running mean.
+
+
+```
+
+Binsense analyses suggest the greatest changes in SPD occur when little to no clustering occurs (h < 500), particularly for the Great Basin. However clustering with h > 500 produces minimal change. Therefore we elect to bin at 1000 years following Codding et al 2021. Regardless of h value though, the trend in spds remains the same.
+
+Generate the bins we will use in model creation and evaluation
+```{r}
+Plat.bins <- binPrep(sites = plat.14c.5k$Site_Name, ages = plateau.14c$Date, h = 1000)
+Basin.bins <- binPrep(sites = basin.14c.5k$Site_Name, ages = basin.14c$Date, h = 1000)
+```
+
+Using the calibrated dates and the bins, make a summed probability distribution just to see the patterns.
+```{r spd non-corrected}
+
+dat_spd.Plat <- spd(dat_cal.Plat, runm = 100, bins = Plat.bins, timeRange = c(4000,0), spdnormalised = FALSE)#make the spd for the plateau dates, we use a running mean of 100 years here for visualization
+
+dat_spd.Basin <- spd(dat_cal.Basin, runm = 100, bins = Basin.bins, timeRange = c(4000,0), spdnormalised = FALSE)#make the spd for the basin dates, we use a running mean of 100 years here for visualization
+
+```
+
+Plot the SPDs
+```{r}
+plot(NA,
+     xlim=c(0,4000),
+     ylim=c(0,2.5),
+     xlab="Year cal. BP",
+     ylab="Population Density (SPD)"
+)
+
+lines(dat_spd.Plat$grid$PrDens~dat_spd.Plat$grid$calBP, lwd = 1, col = cp.col)
+
+polygon(y=c(rep(0, length(dat_spd.Plat$grid$calBP)), rev(dat_spd.Plat$grid$PrDens)),
+        x=c(dat_spd.Plat$grid$calBP, rev(dat_spd.Plat$grid$calBP)),
+        col=alpha(cp.col, alpha=0.5),
+        border = NA
+        )
+
+lines(dat_spd.Basin$grid$PrDens~dat_spd.Basin$grid$calBP, lwd = 1, col = gb.col)
+
+
+polygon(y=c(rep(0, length(dat_spd.Basin$grid$calBP)), rev(dat_spd.Basin$grid$PrDens)),
+        x=c(dat_spd.Basin$grid$calBP, rev(dat_spd.Basin$grid$calBP)),
+        col=alpha(gb.col, alpha=0.5),
+        border = NA
+        )
+
+legend("topright", legend = c("Plateau", "Basin"), fill = c(cp.col, gb.col), border = NA, bty = "n")
+
+```
+
+What we can see is there is apparent population increase in both regions, though that pattern looks quite different between the Plateau and the Basin
+
+However, we know there is going to be error/uncertainty around these SPD recreations of relative past population density. This is important because the SPD is our observed statistic for model matching. Therefore we don't want to match our simulated spd just to the spd plotted above. To better capture the uncertainty in the spd recreations of relative past population density, and to better enable us to evaluate model parameter sets' performace, we will implement an adapted version Dinapoli et al's 2021 generation of a thinned spd. Thinning causes us to use a single date per bin as the 'true' date. Dinapoli et al generated a new thinned spd for each run of their model. We will instead generate 1000 unique spds (via iterated spd creation with thinning). This enables several key things: 1) this will help capture the uncertainty in the generated spd, 2) by calculating a simulated model's fit to each of the 1000 spds we can weight selection of high performing models towards those that best match to the full spread of the observed spd with its uncertainty rather than single parameter sets that may match a single spd well. For example, say one model fits really well to 75% of our observed spds - in our setup by using 1000 spds we can ensure more value is assigned to that model than one that only matches 25% of spds well.
+
+
+First, make normalised and non-normalised calibrated date objects. We use both normalised and not normalised due to uncertainty as to which is the most appropriate choice (see Dinapoli et al 2021).
+```{r}
+#Calibrate the dates using normalisation
+dat_cal.Plat.norm <- calibrate(plat.14c.5k$Date, #read the 14c age
+                          errors = plat.14c.5k$Error, #get the date's error
+                          calCurves = "intcal20",  #use Intcal 20 to calibrate the 14c dates
+                          normalised = TRUE)
+
+#and without normalising
+dat_cal.Plat.nnorm <- calibrate(plat.14c.5k$Date,
+                                errors = plat.14c.5k$Error,
+                                calCurves = "intcal20",
+                                normalised = FALSE)
+
+
+#Calibrate the dates using normalisation
+dat_cal.Basin.norm <- calibrate(basin.14c.5k$Date, #read the 14c age
+                          errors = basin.14c.5k$Error, #get the date's error
+                          calCurves = "intcal20",  #use Intcal 20 to calibrate the 14c dates
+                          normalised = TRUE)
+
+#and without normalising
+dat_cal.Basin.nnorm <- calibrate(basin.14c.5k$Date,
+                                errors = basin.14c.5k$Error,
+                                calCurves = "intcal20",
+                                normalised = FALSE)
+```
+
+
+To begin matching simulations to our observed SPD data, we first begin by defining target spds.
+```{r}
+
+#Using a thinning process so we use only 1 date per generated bin (from above)
+
+thin.df <- data.frame(RN = 1:length(Plat.bins), bins = Plat.bins)#First, make a dataframe with a unique numeric identifier for each date
+allbins <- unique(as.character(Plat.bins)) #grab the unique bins (unike sites)
+sitelist <- vector(mode = "list", length = length(allbins))#make a vector of lists that is equal to the number of unique bins
+
+#Set how many spds we will build for comparing
+n.spds <- 2
+
+#setup for parallel processing & tracking progress
+ncores <- 12
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = n.spds, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+results <- data.frame()
+#class(results) <- 'CalGrid'
+
+observed.spds <- foreach(i = 1:n.spds, .packages = "rcarbon", .options.snow = opts) %dopar%
+  {
+  set.seed(i)
+  #randomly thin the 14c dates by bins to get a subsampled set of dates with 1 date per bin.
+  for (a in 1:length(allbins)) { 
+  thin.df1 <- thin.df[thin.df$bins == allbins[a],]#grab each of the unique bins and their numeric identifier
+  if (nrow(thin.df1)<=1){
+    sitelist[[a]] <- thin.df1$RN #if there is only 1 date from a bin, use that bin's numeric identifier 
+  } else {
+    sitelist[[a]] <- sample(thin.df1$RN, 1)#if there is more than 1 date from a bin, sample the bin and keep only 1 of the unique identifiers
+  }
+}
+
+index = sort(unlist(sitelist))#get the sorted numeric identifiers for each bin selected above as a vector
+
+#Create a target SPD (normalised) that uses only the number of dates equal to (and positioned equal to) those selected in the thinning process (1 date per bin)
+target.spd.norm <- spd(dat_cal.Plat.norm[index], datenormalised = FALSE, spdnormalised = TRUE, timeRange = c(4000,0), verbose = FALSE)
+#And repeat for a non-normalised spd (non-normalised b/c it uses the non-normalised calibrated date object)
+target.spd.nnorm <- spd(dat_cal.Plat.nnorm[index], datenormalised = FALSE, spdnormalised = TRUE, timeRange = c(4000,0), verbose = FALSE)
+
+return(data.frame(calBP = target.spd.norm$grid$calBP, norm.PrDens = target.spd.norm$grid$PrDens, nnorm.PrDens = target.spd.nnorm$grid$PrDens))
+    
+  }
+
+
+observed.spds <- do.call('cbind.data.frame', observed.spds) #Bind the results together
+observed.spds <- observed.spds[, -seq(from = 4,to = length(observed.spds[1,]), by = 3)]#drop the repeated yBP values
+
+
+stopCluster(cl)
+```
+
+Save these to a csv so the code does not have to be rerun
+```{r, eval = FALSE}
+
+write.csv(observed.spds, "Observed_spds_Plateau.csv")
+
+```
+
+Repeat for Basin.
+```{r}
+
+#Using a thinning process so we use only 1 date per generated bin (from above)
+
+thin.df.basin <- data.frame(RN = 1:length(Basin.bins), bins = Basin.bins)#First, make a dataframe with a unique numeric identifier for each date
+allbins.basin <- unique(as.character(Basin.bins)) #grab the unique bins (unike sites)
+sitelist.basin <- vector(mode = "list", length = length(allbins.basin))#make a vector of lists that is equal to the number of unique bins
+
+#Set how many spds we will build for comparing
+n.spds <- 1000
+
+#setup for parallel processing & tracking progress
+ncores <- 12
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = n.spds, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+results <- data.frame()
+#class(results) <- 'CalGrid'
+
+observed.spds.basin <- foreach(i = 1:n.spds, .packages = "rcarbon", .options.snow = opts) %dopar%
+  {
+  set.seed(i)
+  #randomly thin the 14c dates by bins to get a subsampled set of dates with 1 date per bin.
+  for (a in 1:length(allbins.basin)) { 
+  thin.df1 <- thin.df.basin[thin.df.basin$bins == allbins.basin[a],]#grab each of the unique bins and their numeric identifier
+  if (nrow(thin.df1)<=1){
+    sitelist.basin[[a]] <- thin.df1$RN #if there is only 1 date from a bin, use that bin's numeric identifier 
+  } else {
+    sitelist.basin[[a]] <- sample(thin.df1$RN, 1)#if there is more than 1 date from a bin, sample the bin and keep only 1 of the unique identifiers
+  }
+}
+
+index = sort(unlist(sitelist.basin))#get the sorted numeric identifiers for each bin selected above as a vector
+
+#Create a target SPD (normalised) that uses only the number of dates equal to (and positioned equal to) those selected in the thinning process (1 date per bin)
+target.spd.norm <- spd(dat_cal.Basin.norm[index], datenormalised = FALSE, spdnormalised = TRUE, timeRange = c(4000,0), verbose = FALSE)
+#And repeat for a non-normalised spd (non-normalised b/c it uses the non-normalised calibrated date object)
+target.spd.nnorm <- spd(dat_cal.Basin.nnorm[index], datenormalised = FALSE, spdnormalised = TRUE, timeRange = c(4000,0), verbose = FALSE)
+
+return(data.frame(calBP = target.spd.norm$grid$calBP, norm.PrDens = target.spd.norm$grid$PrDens, nnorm.PrDens = target.spd.nnorm$grid$PrDens))
+    
+  }
+  
+observed.spds.basin <- do.call('cbind.data.frame', observed.spds.basin) #Bind the results together
+observed.spds.basin <- observed.spds.basin[, -seq(from = 4,to = length(observed.spds.basin[1,]), by = 3)]#drop the repeated yBP values
+  
+stopCluster(cl)
+```
+
+Save these to a csv so the code does not have to be rerun
+```{r, eval = FALSE}
+
+write.csv(observed.spds.basin, "Observed_spds_Basin.csv")
+
+```
+
+##NEED TO EDIT THIS FOR UPDATED NPP ONCE WE CALCULATE THAT WITH THE NEW TEMP AND PRECIP VALUES
+Read in the data for model development
+```{r}
+#read in the climate data
+clim.df <- read.csv("./data/clim.df.csv")#read the 21ka climate data with npp calculated using Miami model
+clim.df <- clim.df[which(clim.df$age < 4001 & clim.df$age > -1),]#cut to the past 4000 years
+clim.df <- approx(clim.df$age, clim.df$npp, xout = seq(4000,0,-1))#interpolate npp between each of the decadal reconstructions for annual resolution
+clim.df <- data.frame(age = clim.df$x, npp = clim.df$y)
+
+#read in the saved spds
+observed.spds <- read.csv("./data/Observed_spds_Plateau.csv")
+observed.spds.norm <- observed.spds[,c(1,seq(2,2001,2))]#grab the normalized spds and put in own object
+observed.spds.nnorm <- observed.spds[,c(1,seq(3,2002,2))]#make a df for the not normalized spds
+
+observed.spds.basin <- read.csv("./data/Observed_spds_Basin.csv")
+observed.spds.basin.norm <- observed.spds.basin[,c(1,seq(2,2001,2))]#grab the normalized spds and put in own object
+observed.spds.basin.nnorm <- observed.spds.basin[,c(1,seq(3,2002,2))]#make a df for the not normalized spds
+
+#read in the errors for use in simulated spds
+Plateau.errors <- read.csv("./data/Plateau_errors.csv")
+Basin.errors <- read.csv("./data/Basin_errors.csv")
+
+#set the number of bins per region
+allbins <- 3192 #this is the # unique sites/bins for Plateau dates 4000 ybp and younger
+allbins.basin <- 1364 #this is the # unique sites/bins for Basin dates 4000 ybp and younger
+
+#set the number of years (equating to time period) for model matching (here using 4000 to 1000 ybp - see below)
+yrs.match.range <- 1:3001
+
+```
+
+Plot the observed spds
+```{r}
+
+par(mfrow = c(1,2))
+plot(1,ylab = "Summed Probability (Normalized)", xlab = "CalBP", ylim = c(0, 0.0008), xlim = c(0,4000))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.0008,0.0008,0), col = alpha("grey", alpha = 0.5), border = NA)
+for (i in 2:1001) {
+  lines(observed.spds.norm[,i]~observed.spds.norm$calBP, col = rgb(59, 15, 112, max = 255, alpha = 10))
+}
+#lines(x = c(1000,1000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+#lines(x = c(4000,4000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+
+
+plot(1, ylab = "Summed Probability (not Normalized)", xlab = "CalBP", ylim = c(0, 0.0008), xlim = c(0,4000))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.0008,0.0008,0), col = alpha("grey", alpha = 0.5), border = NA)
+for (i in 2:1001) {
+  lines(observed.spds.nnorm[,i]~observed.spds.norm$calBP, col = rgb(96,206,172, max = 255, alpha = 10))
+}
+#lines(x = c(1000,1000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+#lines(x = c(4000,4000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+
+```
+
+Here we can see the outcome of 1000 iterations of each the normalised and not normalised observed spd. This gives us 1000 possible recreations of the 'true' spd. As we can see, the shape and direction does not change between the samples, but there is variation in the band. Thus we will match to the range of this variation. The shaded area represent the region of the spd to which model's are compared for performance evaluation. We prioritize here matching to the region of the population plateau as we are interested in the dynamics leading to and through population expansion but are not evaluating population collapse yet. 
+
+Next we can visualize the environmental trends over the same period.
+Plot the averaged precip per month for each of the regions
+```{r}
+plot(plateau.clim$MoAvgPrecip~plateau.clim$calBP, type = "l", lwd = 1, col = cp.col, ylim = c(22, 34), ylab = "Avg. Mo. Precip.", xlab = "CalBP")
+lines(basin.clim$MoAvgPrecip~basin.clim$calBP, lwd = 1, col = gb.col)
+legend("bottomright", legend = c("Plateau", "Basin"), col = c(cp.col, gb.col), lty = 1, cex = 0.75, bty = "n")
+
+```
+
+Plot average Tmin and Tmax per region
+```{r}
+par(mfrow = c(1,2))
+
+plot(plateau.clim$MoAvgTmax~plateau.clim$calBP, type = "l", lwd = 1, col = cp.col, ylim = c(13, 19), ylab = "Avg. Mo. Tmax", xlab = "CalBP")
+lines(basin.clim$MoAvgTmax~basin.clim$calBP, lwd = 1, col = gb.col)
+legend("topright", legend = c("Plateau", "Basin"), col = c(cp.col, gb.col), lty = 1, cex = 0.75, bty = "n")
+
+plot(plateau.clim$MoAvgTmin~plateau.clim$calBP, type = "l", lwd = 1, col = cp.col, ylim = c(-4, 2), ylab = "Avg. Mo. Tmin", xlab = "CalBP")
+lines(basin.clim$MoAvgTmin~basin.clim$calBP, lwd = 1, col = gb.col)
+legend("topright", legend = c("Plateau", "Basin"), col = c(cp.col, gb.col), lty = 1, cex = 0.75, bty = "n")
+
+
+```
+
+Establish parameter combinations
+```{r}
+
+#Globals
+nsim <- 5 #set the number of parameter combinations to use
+tstart <- 4000 #set the beginning of the simulation to be 4000 yBP
+
+#Landscape variables
+npp_lo <- vector()#a vector to hold the npp min threshold for any population to be present
+npp_hi <- vector()#a vector to hold the npp max threshold over which no increase in k occurs (unless by intensification)
+for (i in 1:nsim) {
+  npp_limits <- sort(runif(2, min = 0.1, max = 1.44))#grab 2 npp values to be low and high and sort from low to high
+  #the min npp during our study period is 0.4570309 while the max is 1.077869. We therefore randomly sample from values below the min to above the max. Min npp represents the min npp needed to support at least some population. Max represents the npp value at which the maximum k (without intensification) is reached. Any npp above that is essentially unusable by the population and doesn't result in larger k.
+  npp_lo <- append(npp_lo, npp_limits[1])  
+  npp_hi <- append(npp_hi, npp_limits[2])
+}
+
+#Intensification variables
+tseistart <- round(runif(nsim, min = 1800, max = 3500))#select the year in which intensification will begin
+SEI_max <- runif(nsim, min = 1, max = 50) #intensification multiplier (max amount of the multiplier that increases k with SEI)
+K_m <- 1 #this is the intensification constant applied to K_t on each time step. It is 1 b/c prior to SEI beginning, there is no SEI effect on K_t. But once SEI begins, it is a multiplier, so 1 + SEI at that moment will add to k.
+
+#Population variables
+cK0 <- rexp(nsim, rate = 20)#set a starting population as a proportion of Kmax
+r <- rtruncnorm(n=nsim,a=0.0001,b=0.5,mean=0.04,sd=0.1)#set a population growth rate. Mean 0.04 from Zahid et al 2016 and Page et al. 2016.
+#Range enables sampling across other estimates in published lit and from DiNappoli and Porcic ABC papers.
+Kmax <- 1 #hold Kmax constant at a value of 1, with only SEI allowed to push population beyond that amount
+#Kmax <- exp(runif(nsim, min = log(100), max = log(10000)))#set a maximum carrying capacity
+
+#make a dataframe to hold nsim parameter combinations
+params <- data.frame(tstart = tstart, r = r, cK0 = cK0, Kmax = Kmax, npp_lo = npp_lo, npp_hi = npp_hi, tseistart = tseistart, SEI_max = SEI_max)
+params$combo <- 1:length(params$tstart)#set a unique parameter combination number so we can link outcomes to initial param values
+
+
+idCounter <- 0
+
+#eventually we want to add code that will alter the usable npp (and thereby the k) that can be returned to during a collapse in SEI - basically if farming is no longer viable, SEI may have altered what you can actually use, so you may not be able to to return to the same foraging k
+
+#also - perhaps we could use Blake's work looking at how the agricultural niche changes over time with shifting precip and temp regimes and use that to inform the npp to k relationship (future project that includes collapse)
+
+
+#Alternate SEI version where SEI happens at every time step (year) by adding a % to k but with a marginal decline (each year sees the k added by SEI shrink by some % so at some point there are no more gains to k)
+#SEI <- vector()
+#SEIdecline <- vector()
+#for (i in 1:nsim) {
+#  SEI_vals <- sort(runif(2, min = 0, max = 1)) #get 2 values between 0 and 1
+#  SEI <- append(SEI, SEI_vals[2]) #set the higher value as the % added to k each year after SEI begins
+#  SEIdecline <- append(SEIdecline, SEI_vals[1]) #set the lower value as the marginal decline (% loss) in effectiveness of SEI with each year
+#}
+
+```
+
+Visualize the npp to k relationship
+```{r}
+
+plot.df <- data.frame(npp = c(min(clim.df$npp), params$npp_lo[4], params$npp_hi[4], max(clim.df$npp)),
+                      K = c(0, 0, params$Kmax[4], params$Kmax[4]))
+ggplot(plot.df, aes(x = npp, y = K)) +
+  geom_line()
+
+```
+
+
+Run the model and generate the distance measure outputs
+```{r}
+#setup for parallel processing & tracking progress
+ncores <- 2
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = nsim, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon", .options.snow = opts) %dopar%
+  {
+
+    #establish npp boundary conditions
+    npp.conds <- data.frame(npp = c(params$npp_lo[i], params$npp_hi[i], max(clim.df$npp)),
+                      K = c(0, params$Kmax[i], params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
+    
+    ## Derive time-dependent K
+    ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
+    ## First filter climate to tstart
+    clim.df.run <- clim.df[clim.df$age <= tstart & clim.df$age >= 0,] #get climate data from 4000 to 0 yBP
+    time <- clim.df.run$age
+    #time <- max(clim.df$age) - clim.df$age## Need to invert time
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df.run$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp from our climate reconstruction. This gives us the carrying capacity at each time step w/out any SEI occurring.
+    K_t[is.na(K_t)] <- 0 #Make sure any periods where popluation should fall to 0 are 0s and not NAs
+    
+    set.seed(i)
+    sim.growthModel <- data.frame(log_growth_t(N0 = params$cK0[i], r = params$r[i], K = K_t, K_m = K_m, time = time, tseistart = params$tseistart[i], SEI_max = params$SEI_max[i])) #run the log growth model function
+    sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
+    class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
+    param.combo <- params$combo[i] #hold onto the unique parameter combo
+    results <- createmodelspd(model = sim.growthModel.spd)#create simulated spd from simulate growth model, need to use just calBP and PrDens
+    return(results)
+    
+    #this line of code would be used to do the direct Dinapoli et al approach
+    #sim.growthModel <- log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time)
+
+  }
+
+
+stopCluster(cl)
+
+eval.results<- do.call('rbind.data.frame', g.model.res)
+
+```
+
+
+Select the top performing models
+```{r}
+no.models.keep <- 3
+
+#get the top 5 performing models from each measure
+top.params.eucun <- eval.results[order(eval.results$euc.uncal.norm),][1:no.models.keep,]
+top.params.eucunn <- eval.results[order(eval.results$euc.uncal.nnorm),][1:no.models.keep,]
+top.params.ecun <- eval.results[order(eval.results$euc.cal.norm),][1:no.models.keep,]
+top.params.ecunn <- eval.results[order(eval.results$euc.cal.nnorm),][1:no.models.keep,]
+top.params.nrmseun <- eval.results[order(eval.results$nrmse.uncal.norm),][1:no.models.keep,]
+top.params.nrmseunn <- eval.results[order(eval.results$nrmse.uncal.nnorm),][1:no.models.keep,]
+top.params.nrmsecn <- eval.results[order(eval.results$nrmse.cal.norm),][1:no.models.keep,]
+top.params.nrmsecnn <- eval.results[order(eval.results$nrmse.cal.nnorm),][1:no.models.keep,]
+
+```
+
+
+
+*****************************************************************************
+CODE BELOW NEEDS TO BE UPDATED TO MATCH ABOVE AND INCORPORATE READING IN SET SEI JUMPS AT SPECIFIC YEARS
+*****************************************************************************
+
+We can then rerun the model for just the best performing parameter combinations. Right now this code does not recreate SPDs, it just is making the model values. Next step will be to make the simulated SPDs in source code 05 and be able to use that to plot the output SPDs.
+```{r}
+
+#first, select the parameter combinations of interest
+best.params <- params[params$combo %in% top.params.ecun$param.combo,]
+#best.params <- rbind(best.params, params[params$combo %in% top.params.eucunn$param.combo,], params[params$combo %in% top.params.ecun$param.combo,],params[params$combo %in% top.params.ecunn$param.combo,],params[params$combo %in% top.params.nrmseun$param.combo,],params[params$combo %in% top.params.nrmseunn$param.combo,],params[params$combo %in% top.params.nrmsecn$param.combo,],params[params$combo %in% top.params.nrmsecnn$param.combo,])
+
+
+#setup for parallel processing & tracking progress
+ncores <- 10
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = no.models.keep, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+best.models.res <- foreach(i = 1:length(best.params[,1]), .options.snow = opts) %dopar%
+  {
+
+    
+    #establish npp boundary conditions
+    npp.conds <- data.frame(npp = c(best.params$npp_lo[i], best.params$npp_hi[i], max(clim.df$npp)),
+                      K = c(0, best.params$Kmax[i], best.params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
+    
+    ## Derive time-dependent K
+    ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
+    ## First filter climate to tstart
+    clim.df.run <- clim.df[clim.df$age <= tstart & clim.df$age >= 0,] #get climate data from 4000 to 0 yBP
+    time <- clim.df.run$age
+    #time <- max(clim.df$age) - clim.df$age## Need to invert time
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df.run$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp from our climate reconstruction. This gives us the carrying capacity at each time step w/out any SEI occurring.
+    K_t[is.na(K_t)] <- 0 #Make sure any periods where popluation should fall to 0 are 0s and not NAs
+    
+    set.seed(i)
+    sim.growthModel <- data.frame(log_growth_t(N0 = best.params$cK0[i], r = best.params$r[i], K = K_t, K_m = K_m, time = time, tseistart = best.params$tseistart[i], SEI_max = best.params$SEI_max[i])) #run the log growth model function
+    sim.growthModel$combo <- best.params$combo[i]
+   # sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
+  #  class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
+    return(sim.growthModel)
+ 
+  }   
+
+best.results<- do.call('rbind.data.frame', best.models.res)
+
+stopCluster(cl)
+```
+
+We can then plot a population size estimate and a relative population size for each year in the simulation from the best performing models.
+```{r}
+#make a blank plot with xlim as c(0, max(results$time) and ylim as c(0, max(results$N)))
+
+#then do a for loop to plot the lines for N~time for each model
+
+accepted.combos <- unique(best.results$combo)
+
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, 0.002), ylab = "Pop as PrDens", xlab = "CalBP")
+for (i in 1:no.models.keep){
+  lines(subset(best.results$PrDens, best.results$combo == accepted.combos[3]) ~ subset(best.results$CalBP, best.results$combo == accepted.combos[3]), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$N, na.rm = TRUE)), ylab = "Total Population Size", xlab = "CalBP")
+for (i in 1:no.models.keep){
+  lines(subset(best.results$N, best.results$combo == accepted.combos[i]) ~ subset(best.results$CalBP, best.results$combo == accepted.combos[i]), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+```
+
+We can also plot the top performing models for each distance metric
+```{r}
+#euc uncal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC UNCAL NORM")
+for (i in 1:no.models.keep){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#euc uncal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC UNCAL NNORM")
+for (i in (no.models.keep+1):(no.models.keep*2)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#euc cal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC CAL NORM")
+for (i in (no.models.keep*2+1):(no.models.keep*3)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#euc cal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "EUC CAL NNORM")
+for (i in (no.models.keep*3+1):(no.models.keep*4)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME uncal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME UNCAL NORM")
+for (i in (no.models.keep*4+1):(no.models.keep*5)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME uncal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME UNCAL NNORM")
+for (i in (no.models.keep*5+1):(no.models.keep*6)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME cal norm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME CAL NORM")
+for (i in (no.models.keep*6+1):(no.models.keep*7)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+
+#NRSME cal nnorm
+plot(NULL,xlim = c(0, max(best.results$CalBP)), ylim = c(0, max(best.results$PrDens, na.rm = TRUE)), ylab = "Population Size", xlab = "CalBP", main = "NRSME CAL NNORM")
+for (i in (no.models.keep*7+1):(no.models.keep*8)){
+  lines(subset(best.results$PrDens, best.results$combo == i) ~ subset(best.results$CalBP, best.results$combo == i), lwd = 1, col = alpha("grey50", alpha = 0.5))
+}
+    
+
+```
+
+
+Next, with the simulated model, we need to generate a summed probability distribution. The code below (along with the function in the simulated modelspds source file) allow us to do this. The spd recreation code is mostly replicated from Dinapoli et al 2021.
+```{r}
+#setup for parallel processing & tracking progress
+ncores <- 10
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = length(best.params[,1]), style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+#Add code to ignore if the model PrDens goes to NA at any point (which happens if we drop to a population of 0)
+best.sims.spds <- foreach (i=1:length(best.params[,1]), .packages = c("rcarbon"), .options.snow = opts) %dopar%
+  {
+    #subset to a single model simulation run
+    model <- best.results[which(best.results$combo == best.params$combo[i]),]
+    param.combo <- unique(model$combo) #hold onto the unique parameter combo
+    model <- model[,c(1,4)]#grab just calbp and prdens from the model
+    #convert the model dataframe into a CalGrid object
+    class(model) <- 'CalGrid'
+
+#setup a unique identifier
+idCounter <- 0
+
+set.seed(i)
+    model.spds <- recreatebestmodelspd(model=model)
+    return(model.spds)
+    
+  }
+
+stopCluster(cl)
+
+```
+
+
+We can then plot the log growth model spds to see how they look.
+```{r}
+plot(sim.spds[[1]]$ucs.norm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Uncalibrate, Normalised")
+plot(sim.spds[[1]]$ucs.nnorm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Uncalibrate, Not Normalised")
+plot(sim.spds[[1]]$cs.norm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Calibrate, Normalised")
+plot(sim.spds[[1]]$cs.nnorm.prdens ~ sim.spds[[1]]$calBP, type = "l", ylab = "PrDens", xlab = "Calibrate, Not Normalised")
+
+```
