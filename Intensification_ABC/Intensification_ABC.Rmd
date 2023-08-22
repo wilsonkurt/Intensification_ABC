@@ -20,8 +20,10 @@ library(utils) #for progress bars
 library(rcarbon)#14c date calibration and spd recreation
 library(foreach)
 library(truncnorm)#used in making prior probability distribution of r
+library(dplyr)
+library(corrplot)#checking posterior probability correlation
 
-
+source("01_miami.R")
 source("03_loggrowthmodel.R")
 source("04_simulatedmodelspds.R")
 source("05_exportbestmodelspds.R")
@@ -38,12 +40,37 @@ plat.14c.5k <- plateau.14c[which(plateau.14c$Date < 4001),] #5864 dates in last 
 basin.14c <- read.csv("./data/Basin_dates_quality_controlled.csv") #4157 dates
 basin.14c.5k <- basin.14c[which(basin.14c$Date < 4001),] #3362 dates in last 4000 years
 
+#Climate data is obtained from Lorenz, D., Nieto-Lugilde, D., Blois, J. et al. Downscaled and debiased climate simulations for North America from 21,000 years ago to 2100AD. Sci Data 3, 160048 (2016). https://doi.org/10.1038/sdata.2016.48. It was then subset to the two study regions and spatial averaging was performed so that the resultant data is the average min temp (C), max temp (C), and precip (mm) per month for the region.
 plateau.clim <- read.csv("./data/Plateau.clim.csv")
 basin.clim <- read.csv("./data/Basin.clim.csv")
 
 #Make plot colors
 cp.col <- rgb(59, 15, 112, max = 255)#purple
 gb.col <- rgb(96,206,172, max = 255)#teal
+```
+
+First, lets get the climate data translated into NPP. We will do this using the Miami Model (Leith 1975). The Miami model is a useful baseline model providing reasonable estimates of NPP rates using annual temperature and precipitation estimates (Adams et al 2004) and has been productively used in other ABC demographic analyses (e.g., Eriksson et al. 2012)
+```{r}
+#Begin by getting mean annual temp and annual precip for each decade
+bas.clim.df <- data.frame(year = basin.clim$calBP, temp = ((((basin.clim$JanTmin + basin.clim$JanTmax) / 2) + ((basin.clim$FebTmin + basin.clim$FebTmax) / 2) + ((basin.clim$MarTmin + basin.clim$MarTmax) / 2) + ((basin.clim$AprTmin + basin.clim$AprTmax) / 2) + ((basin.clim$MayTmin + basin.clim$MayTmax) / 2) + ((basin.clim$JunTmin + basin.clim$JunTmax) / 2) + ((basin.clim$JulTmin + basin.clim$JulTmax) / 2) + ((basin.clim$AugTmin + basin.clim$AugTmax) / 2) + ((basin.clim$SepTmin + basin.clim$SepTmax) / 2) + ((basin.clim$OctTmin + basin.clim$OctTmax) / 2) + ((basin.clim$NovTmin + basin.clim$NovTmax) / 2) + ((basin.clim$DecTmin + basin.clim$DecTmax) / 2)) / 12), pre = (basin.clim$JanPrecip + basin.clim$FebPrecip + basin.clim$MarPrecip + basin.clim$AprPrecip + basin.clim$MayPrecip + basin.clim$JunPrecip + basin.clim$JulPrecip + basin.clim$AugPrecip + basin.clim$SepPrecip + basin.clim$OctPrecip + basin.clim$NovPrecip + basin.clim$DecPrecip))
+
+pla.clim.df <- data.frame(year = plateau.clim$calBP, temp = ((((plateau.clim$JanTmin + plateau.clim$JanTmax) / 2) + ((plateau.clim$FebTmin + plateau.clim$FebTmax) / 2) + ((plateau.clim$MarTmin + plateau.clim$MarTmax) / 2) + ((plateau.clim$AprTmin + plateau.clim$AprTmax) / 2) + ((plateau.clim$MayTmin + plateau.clim$MayTmax) / 2) + ((plateau.clim$JunTmin + plateau.clim$JunTmax) / 2) + ((plateau.clim$JulTmin + plateau.clim$JulTmax) / 2) + ((plateau.clim$AugTmin + plateau.clim$AugTmax) / 2) + ((plateau.clim$SepTmin + plateau.clim$SepTmax) / 2) + ((plateau.clim$OctTmin + plateau.clim$OctTmax) / 2) + ((plateau.clim$NovTmin + plateau.clim$NovTmax) / 2) + ((plateau.clim$DecTmin + plateau.clim$DecTmax) / 2)) / 12), pre = (plateau.clim$JanPrecip + plateau.clim$FebPrecip + plateau.clim$MarPrecip + plateau.clim$AprPrecip + plateau.clim$MayPrecip + plateau.clim$JunPrecip + plateau.clim$JulPrecip + plateau.clim$AugPrecip + plateau.clim$SepPrecip + plateau.clim$OctPrecip + plateau.clim$NovPrecip + plateau.clim$DecPrecip))
+```
+
+With year, annual avg temp (C), and annual precip (mm) data we can run the miami vegetation model to estimate NPP per decade.
+```{r}
+bas.clim.df$npp <- miami(tmp = bas.clim.df$temp, pre = bas.clim.df$pre)
+pla.clim.df$npp <- miami(tmp = pla.clim.df$temp, pre = pla.clim.df$pre)
+
+#append these to the existing csv files and save
+#plateau.clim$AvgAnnTemp <- pla.clim.df$temp
+#plateau.clim$AnnPrecip <- pla.clim.df$pre
+#plateau.clim$NPP <- pla.clim.df$npp
+#basin.clim$AvgAnnTemp <- bas.clim.df$temp
+#basin.clim$AnnPrecip <- bas.clim.df$pre
+#basin.clim$NPP <- bas.clim.df$npp
+#write.csv(pla.clim.df, "./data/pla.clim.df.csv")
+#write.csv(bas.clim.df, "./data/bas.clim.df.csv")
 ```
 
 Notes about the data
@@ -169,10 +196,10 @@ allbins <- unique(as.character(Plat.bins)) #grab the unique bins (unike sites)
 sitelist <- vector(mode = "list", length = length(allbins))#make a vector of lists that is equal to the number of unique bins
 
 #Set how many spds we will build for comparing
-n.spds <- 2
+n.spds <- 1000
 
 #setup for parallel processing & tracking progress
-ncores <- 12
+ncores <- 10
 cl <- makeCluster(ncores)
 registerDoSNOW(cl)
 pb <- txtProgressBar(max = n.spds, style = 3)
@@ -184,7 +211,7 @@ results <- data.frame()
 
 observed.spds <- foreach(i = 1:n.spds, .packages = "rcarbon", .options.snow = opts) %dopar%
   {
-  set.seed(i)
+  set.seed(i) #+500
   #randomly thin the 14c dates by bins to get a subsampled set of dates with 1 date per bin.
   for (a in 1:length(allbins)) { 
   thin.df1 <- thin.df[thin.df$bins == allbins[a],]#grab each of the unique bins and their numeric identifier
@@ -217,7 +244,7 @@ stopCluster(cl)
 Save these to a csv so the code does not have to be rerun
 ```{r, eval = FALSE}
 
-write.csv(observed.spds, "Observed_spds_Plateau.csv")
+#write.csv(observed.spds, "Observed_spds_Plateau.csv")
 
 ```
 
@@ -234,7 +261,7 @@ sitelist.basin <- vector(mode = "list", length = length(allbins.basin))#make a v
 n.spds <- 1000
 
 #setup for parallel processing & tracking progress
-ncores <- 12
+ncores <- 10
 cl <- makeCluster(ncores)
 registerDoSNOW(cl)
 pb <- txtProgressBar(max = n.spds, style = 3)
@@ -246,7 +273,7 @@ results <- data.frame()
 
 observed.spds.basin <- foreach(i = 1:n.spds, .packages = "rcarbon", .options.snow = opts) %dopar%
   {
-  set.seed(i)
+  set.seed(i)#+500
   #randomly thin the 14c dates by bins to get a subsampled set of dates with 1 date per bin.
   for (a in 1:length(allbins.basin)) { 
   thin.df1 <- thin.df.basin[thin.df.basin$bins == allbins.basin[a],]#grab each of the unique bins and their numeric identifier
@@ -277,27 +304,87 @@ stopCluster(cl)
 Save these to a csv so the code does not have to be rerun
 ```{r, eval = FALSE}
 
-write.csv(observed.spds.basin, "Observed_spds_Basin.csv")
+#write.csv(observed.spds.basin, "Observed_spds_Basin.csv")
 
 ```
+
+
+Look at the Western North American Indian Database for establishing an SEI influence range.
+```{r}
+w_dat <- read.csv("./data/WNAI-DPLACE_AgrPopAqu_052523.csv")
+
+```
+
+This subset of the D-PLACE WNAI includes three re-coded variables:
+
+    Agricultural products grown for food [WNAI189] which is multiple categories here converted to abs/pres.
+    Population density within territory controlled by community [WNAI288] which is seven categories here converted to a mean of the range. Values:
+        1 Less 1 persn/5sq mle = 0-0.2 = 0.1 ave
+        2 1 prn/sq m-1 prn/5sq = 0.2-1 = 0.6 ave
+        3 1-5 persn per sq mle = 1-5 = 3 ave
+        4 5-25 pers per sq mle = 5-25 = 15 ave
+        5 25-100 persn sq mile = 25-100 = 62.5 ave
+        6 100-500 persn sq mle = 100-500 = NA
+        7 500+ persons sq mile = 500 = NA
+            note: one society is missing population data (Nongatl)
+    Combination Percentage of diet contributed by aquatic animals [WNAI199]
+        Here those societies with a max estimate of 25% and above are excluded for the summary
+        
+Which and how many non-aquatic societies are in the sample:
+```{r}
+subset(w_dat, WNAI199_PerAquHig <= 24)$Soc
+```
+
+Population average by subsistence mode:
+```{r}
+with(subset(w_dat, WNAI199_PerAquHig <= 24), #only those with less than a quarter of diet is aquatic
+     aggregate(WNAI288_DensityAve ~ WNAI189_AgAbsPres, FUN = mean #average density
+               )
+     )
+
+```
+Of the 51 societies with less than a quarter of their diet reliant on aquatic resources, those with agricultural subsistence adaptations have an average density of 18 persons per square mile, while those with hunting and gathering adaptations have an average size of 2 persons per square mile.
+
+To simplifty, this can be interpreted as an increase by an order of magnitude with subsistence intensification to agriculture.
+
+We also want to understand the distribution in that population density.
+```{r}
+
+Ag.present <- subset(w_dat, WNAI199_PerAquHig <= 24)
+Ag.present <- Ag.present[which(Ag.present$WNAI189_AgAbsPres == "Present"),]
+
+Ag.absent <- subset(w_dat, WNAI199_PerAquHig <= 24)
+Ag.absent <- Ag.absent[which(Ag.absent$WNAI189_AgAbsPres == "Absent "),]
+
+par(mfrow = c(1,2))
+hist(Ag.absent$WNAI288_DensityAve, main = "No Ag. Avg Density Est.")
+hist(Ag.present$WNAI288_DensityAve, main = "Ag. Avg Density Est.")
+
+```
+
+So on average the population density of groups incorporating at least some agriculture is 17.46 compared to 2.43 for non-agriculture groups, nearly a magnitude increase. However the distributions vary in plausible density increases from just above 0 to ~60 fold increase in population density. Therefore we will treat this as the prior distribution for the potential influence of SEI on carrying capacity and look to select for the most likely values for the Colorado Plateau and Great Basin.
 
 ##NEED TO EDIT THIS FOR UPDATED NPP ONCE WE CALCULATE THAT WITH THE NEW TEMP AND PRECIP VALUES
 Read in the data for model development
 ```{r}
-#read in the climate data
-clim.df <- read.csv("./data/clim.df.csv")#read the 21ka climate data with npp calculated using Miami model
-clim.df <- clim.df[which(clim.df$age < 4001 & clim.df$age > -1),]#cut to the past 4000 years
-clim.df <- approx(clim.df$age, clim.df$npp, xout = seq(4000,0,-1))#interpolate npp between each of the decadal reconstructions for annual resolution
-clim.df <- data.frame(age = clim.df$x, npp = clim.df$y)
+#read in the climate data for the Colorado Plateau
+pla.clim.df <- read.csv("./data/pla.clim.df.csv")#read the 4ka climate data with npp calculated using Miami model
+pla.clim.df <- approx(pla.clim.df$year, pla.clim.df$npp, xout = seq(4000,0,-1))#interpolate npp between each of the decadal reconstructions for annual resolution
+pla.clim.df <- data.frame(age = pla.clim.df$x, npp = pla.clim.df$y)
+
+#repeat for Great Basin
+bas.clim.df <- read.csv("./data/bas.clim.df.csv")#read the 4ka climate data with npp calculated using Miami model
+bas.clim.df <- approx(bas.clim.df$year, bas.clim.df$npp, xout = seq(4000,0,-1))#interpolate npp between each of the decadal reconstructions for annual resolution
+bas.clim.df <- data.frame(age = bas.clim.df$x, npp = bas.clim.df$y)
 
 #read in the saved spds
-observed.spds <- read.csv("./data/Observed_spds_Plateau.csv")
-observed.spds.norm <- observed.spds[,c(1,seq(2,2001,2))]#grab the normalized spds and put in own object
-observed.spds.nnorm <- observed.spds[,c(1,seq(3,2002,2))]#make a df for the not normalized spds
+observed.spds.plat <- read.csv("./data/Observed_spds_Plateau.csv")
+observed.spds.plat.norm <- observed.spds[,c(1,seq(2,2000,2))]#grab the normalized spds and put in own object
+observed.spds.plat.nnorm <- observed.spds[,c(1,seq(3,2001,2))]#make a df for the not normalized spds
 
 observed.spds.basin <- read.csv("./data/Observed_spds_Basin.csv")
-observed.spds.basin.norm <- observed.spds.basin[,c(1,seq(2,2001,2))]#grab the normalized spds and put in own object
-observed.spds.basin.nnorm <- observed.spds.basin[,c(1,seq(3,2002,2))]#make a df for the not normalized spds
+observed.spds.basin.norm <- observed.spds.basin[,c(1,seq(2,2000,2))]#grab the normalized spds and put in own object
+observed.spds.basin.nnorm <- observed.spds.basin[,c(1,seq(3,2001,2))]#make a df for the not normalized spds
 
 #read in the errors for use in simulated spds
 Plateau.errors <- read.csv("./data/Plateau_errors.csv")
@@ -309,26 +396,42 @@ allbins.basin <- 1364 #this is the # unique sites/bins for Basin dates 4000 ybp 
 
 #set the number of years (equating to time period) for model matching (here using 4000 to 1000 ybp - see below)
 yrs.match.range <- 1:3001
-
 ```
 
 Plot the observed spds
 ```{r}
-
 par(mfrow = c(1,2))
-plot(1,ylab = "Summed Probability (Normalized)", xlab = "CalBP", ylim = c(0, 0.0008), xlim = c(0,4000))
-polygon(x = c(1000,1000,4000,4000), y = c(0,0.0008,0.0008,0), col = alpha("grey", alpha = 0.5), border = NA)
+plot(1,ylab = "Summed Probability (Normalized)", xlab = "CalBP", ylim = c(0, 0.001), xlim = c(0,4000))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
 for (i in 2:1001) {
-  lines(observed.spds.norm[,i]~observed.spds.norm$calBP, col = rgb(59, 15, 112, max = 255, alpha = 10))
+  lines(observed.spds.plat.norm[,i]~observed.spds.plat.norm$calBP, col = rgb(59, 15, 112, max = 255, alpha = 10))
 }
 #lines(x = c(1000,1000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
 #lines(x = c(4000,4000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
 
 
-plot(1, ylab = "Summed Probability (not Normalized)", xlab = "CalBP", ylim = c(0, 0.0008), xlim = c(0,4000))
-polygon(x = c(1000,1000,4000,4000), y = c(0,0.0008,0.0008,0), col = alpha("grey", alpha = 0.5), border = NA)
+plot(1, ylab = "Summed Probability (not Normalized)", xlab = "CalBP", ylim = c(0, 0.001), xlim = c(0,4000))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
 for (i in 2:1001) {
-  lines(observed.spds.nnorm[,i]~observed.spds.norm$calBP, col = rgb(96,206,172, max = 255, alpha = 10))
+  lines(observed.spds.plat.nnorm[,i]~observed.spds.plat.nnorm$calBP, col = rgb(96,206,172, max = 255, alpha = 10))
+}
+#lines(x = c(1000,1000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+#lines(x = c(4000,4000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+
+par(mfrow = c(1,2))
+plot(1,ylab = "Summed Probability (Normalized)", xlab = "CalBP", ylim = c(0, 0.001), xlim = c(0,4000))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for (i in 2:1001) {
+  lines(observed.spds.basin.norm[,i]~observed.spds.basin.norm$calBP, col = rgb(59, 15, 112, max = 255, alpha = 10))
+}
+#lines(x = c(1000,1000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+#lines(x = c(4000,4000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
+
+
+plot(1, ylab = "Summed Probability (not Normalized)", xlab = "CalBP", ylim = c(0, 0.001), xlim = c(0,4000))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for (i in 2:1001) {
+  lines(observed.spds.basin.nnorm[,i]~observed.spds.basin.nnorm$calBP, col = rgb(96,206,172, max = 255, alpha = 10))
 }
 #lines(x = c(1000,1000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
 #lines(x = c(4000,4000), y = c(0,0.0008), lty = 2, col = alpha("grey20", alpha = 0.5))
@@ -336,6 +439,20 @@ for (i in 2:1001) {
 ```
 
 Here we can see the outcome of 1000 iterations of each the normalised and not normalised observed spd. This gives us 1000 possible recreations of the 'true' spd. As we can see, the shape and direction does not change between the samples, but there is variation in the band. Thus we will match to the range of this variation. The shaded area represent the region of the spd to which model's are compared for performance evaluation. We prioritize here matching to the region of the population plateau as we are interested in the dynamics leading to and through population expansion but are not evaluating population collapse yet. 
+
+For one of the distance metrics we use a delta value to de-emphasize small jumps in the SPD in favor of matching to larger movements (which are likely to be more indicative of true relative population change). For the initial work the delta value is 5% of the mean spd.
+```{r}
+plat.spd.avgs <- data.frame(year = observed.spds.plat.norm$calBP, spd.avg = rowMeans(observed.spds.plat.norm[,2:1001]))
+cp.delta <- mean(plat.spd.avgs[,2]) * 0.05#0.0002499375 
+
+bas.spd.avgs <- data.frame(year = observed.spds.basin.norm$calBP, spd.avg = rowMeans(observed.spds.basin.norm[,2:1001]))
+gb.delta <- mean(bas.spd.avgs[,2]) * 0.05#0.0002499375 
+```
+
+For the third distance metric we weight toward the latter half of the temporal sequence. For ease in calculation create a vector with weights.
+```{r}
+weights.vec <- c(rep(1, times = 1500), rep(10, times = 1500))
+```
 
 Next we can visualize the environmental trends over the same period.
 Plot the averaged precip per month for each of the regions
@@ -365,22 +482,22 @@ Establish parameter combinations
 ```{r}
 
 #Globals
-nsim <- 5 #set the number of parameter combinations to use
+nsim <- 8 #set the number of parameter combinations to use
 tstart <- 4000 #set the beginning of the simulation to be 4000 yBP
 
 #Landscape variables
 npp_lo <- vector()#a vector to hold the npp min threshold for any population to be present
 npp_hi <- vector()#a vector to hold the npp max threshold over which no increase in k occurs (unless by intensification)
 for (i in 1:nsim) {
-  npp_limits <- sort(runif(2, min = 0.1, max = 1.44))#grab 2 npp values to be low and high and sort from low to high
-  #the min npp during our study period is 0.4570309 while the max is 1.077869. We therefore randomly sample from values below the min to above the max. Min npp represents the min npp needed to support at least some population. Max represents the npp value at which the maximum k (without intensification) is reached. Any npp above that is essentially unusable by the population and doesn't result in larger k.
+  npp_limits <- sort(runif(2, min = 0.17, max = 1.02))#grab 2 npp values to be low and high and sort from low to high
+  #the min npp during our study period is 0.4763764 while the max is 0.7187248 We therefore randomly sample from values below the min to above the max. Min npp represents the min npp needed to support at least some population. Max represents the npp value at which the maximum k (without intensification) is reached. Any npp above that is essentially unusable by the population and doesn't result in larger k.
   npp_lo <- append(npp_lo, npp_limits[1])  
   npp_hi <- append(npp_hi, npp_limits[2])
 }
 
 #Intensification variables
 tseistart <- round(runif(nsim, min = 1800, max = 3500))#select the year in which intensification will begin
-SEI_max <- runif(nsim, min = 1, max = 50) #intensification multiplier (max amount of the multiplier that increases k with SEI)
+SEI_max <- (rexp(nsim, 0.10)) #distribution produces a right skewed distribution with a mean ~10 and a tail up to ~60 (comparable to the ethnographic cross-cultural estimate of magnitude of population density difference from WNAI for agr vs non-agr groups)
 K_m <- 1 #this is the intensification constant applied to K_t on each time step. It is 1 b/c prior to SEI beginning, there is no SEI effect on K_t. But once SEI begins, it is a multiplier, so 1 + SEI at that moment will add to k.
 
 #Population variables
@@ -393,7 +510,8 @@ Kmax <- 1 #hold Kmax constant at a value of 1, with only SEI allowed to push pop
 #make a dataframe to hold nsim parameter combinations
 params <- data.frame(tstart = tstart, r = r, cK0 = cK0, Kmax = Kmax, npp_lo = npp_lo, npp_hi = npp_hi, tseistart = tseistart, SEI_max = SEI_max)
 params$combo <- 1:length(params$tstart)#set a unique parameter combination number so we can link outcomes to initial param values
-
+params[,14:4014] <- NA #prep columns to hold the SEI jump from the run
+colnames(params) <- c(colnames(params[,1:9]), seq(4000,0,-1))#rename column names to the year for SEI jumps
 
 idCounter <- 0
 
@@ -410,13 +528,12 @@ idCounter <- 0
 #  SEI <- append(SEI, SEI_vals[2]) #set the higher value as the % added to k each year after SEI begins
 #  SEIdecline <- append(SEIdecline, SEI_vals[1]) #set the lower value as the marginal decline (% loss) in effectiveness of SEI with each year
 #}
-
 ```
 
 Visualize the npp to k relationship
 ```{r}
 
-plot.df <- data.frame(npp = c(min(clim.df$npp), params$npp_lo[4], params$npp_hi[4], max(clim.df$npp)),
+plot.df <- data.frame(npp = c(min(pla.clim.df$npp), params$npp_lo[4], params$npp_hi[4], max(pla.clim.df$npp)),
                       K = c(0, 0, params$Kmax[4], params$Kmax[4]))
 ggplot(plot.df, aes(x = npp, y = K)) +
   geom_line()
@@ -426,19 +543,29 @@ ggplot(plot.df, aes(x = npp, y = K)) +
 
 Run the model and generate the distance measure outputs
 ```{r}
-#setup for parallel processing & tracking progress
-ncores <- 2
+
+start_time <- Sys.time()
+
+#setup for parallel processing & tracking progress & run Plateau Simulations
+ncores <- 8
 cl <- makeCluster(ncores)
 registerDoSNOW(cl)
 pb <- txtProgressBar(max = nsim, style = 3)
 progress <- function(n) setTxtProgressBar(pb, n)
 opts <- list(progress = progress)
 
+#set objects to be used in pattern matching to plateau data
+region.errors <- Plateau.errors$Errors
+bins.use <- allbins
+observed.spds.norm <- observed.spds.plat.norm
+observed.spds.nnorm <- observed.spds.plat.nnorm
+delta.val <- cp.delta
+
 g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon", .options.snow = opts) %dopar%
   {
 
     #establish npp boundary conditions
-    npp.conds <- data.frame(npp = c(params$npp_lo[i], params$npp_hi[i], max(clim.df$npp)),
+    npp.conds <- data.frame(npp = c(params$npp_lo[i], params$npp_hi[i], max(pla.clim.df$npp)),
                       K = c(0, params$Kmax[i], params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
     
     ## Derive time-dependent K
@@ -452,52 +579,666 @@ g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon", .options.snow = opts) 
     
     set.seed(i)
     sim.growthModel <- data.frame(log_growth_t(N0 = params$cK0[i], r = params$r[i], K = K_t, K_m = K_m, time = time, tseistart = params$tseistart[i], SEI_max = params$SEI_max[i])) #run the log growth model function
+
     sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
     class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
-    param.combo <- params$combo[i] #hold onto the unique parameter combo
-    results <- createmodelspd(model = sim.growthModel.spd)#create simulated spd from simulate growth model, need to use just calBP and PrDens
-    return(results)
     
-    #this line of code would be used to do the direct Dinapoli et al approach
-    #sim.growthModel <- log_growth_t(N0 = cK0[i], r = r[i], K = K_t, time = time)
-
+    param.combo <- params$combo[i] #hold onto the unique parameter combo
+    
+    results <- createmodelspd(model = sim.growthModel.spd)#create simulated spd from simulate growth model, need to use just calBP and PrDens
+    results <- list(results, data.frame(sim.growthModel$SEI))
+    return(results)
   }
 
 
 stopCluster(cl)
 
-eval.results<- do.call('rbind.data.frame', g.model.res)
+#eval.results<- do.call('rbind.data.frame', g.model.res[[1:5]][1])
 
+#g.model.res[[2]][1]
+
+#for (i in 1:nsim) {
+#  if (length(g.model.res[[i]][[1]]) == 9) {
+#    g.model.res[[i]][[1]][,10:16013] <- NA
+#  }
+#}
+
+#make an empty data.frame to hold the model performance and simulated SPD results
+eval.results <- data.frame()
+
+for (i in 1:nsim) {
+  eval.results <- rbind(eval.results, g.model.res[[i]][[1]])
+}
+
+#record for each of the model setups, what SEI happened in each year in the params object
+for (i in 1:nsim) {
+  params[i,14:4014] <- t(g.model.res[[i]][[2]]) #save the SEI jump occuring in each year of the sequence
+}
+
+#write.csv(params, "./data/Model_parameter_setups.csv")
+#write.csv(eval.results, "./data/Model_results.csv")
+
+save(params, file = "./Output/CPModel_parameter_setups_test.RData")
+save(eval.results, file = "./Output/CPModel_results_test.RData")
+
+#setup for parallel processing & tracking progress & run Great Basin simulations
+ncores <- 8
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+pb <- txtProgressBar(max = nsim, style = 3)
+progress <- function(n) setTxtProgressBar(pb, n)
+opts <- list(progress = progress)
+
+#set objects to be used in pattern matching to basin data
+region.errors <- Basin.errors$Errors
+bins.use <- allbins.basin
+observed.spds.norm <- observed.spds.basin.norm
+observed.spds.nnorm <- observed.spds.basin.nnorm
+delta.val <- gb.delta
+
+g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon", .options.snow = opts) %dopar%
+  {
+
+    #establish npp boundary conditions
+    npp.conds <- data.frame(npp = c(params$npp_lo[i], params$npp_hi[i], max(bas.clim.df$npp)),
+                      K = c(0, params$Kmax[i], params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
+    
+    ## Derive time-dependent K
+    ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
+    ## First filter climate to tstart
+    clim.df.run <- clim.df[clim.df$age <= tstart & clim.df$age >= 0,] #get climate data from 4000 to 0 yBP
+    time <- clim.df.run$age
+    #time <- max(clim.df$age) - clim.df$age## Need to invert time
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df.run$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp from our climate reconstruction. This gives us the carrying capacity at each time step w/out any SEI occurring.
+    K_t[is.na(K_t)] <- 0 #Make sure any periods where popluation should fall to 0 are 0s and not NAs
+    
+    set.seed(i)
+    sim.growthModel <- data.frame(log_growth_t(N0 = params$cK0[i], r = params$r[i], K = K_t, K_m = K_m, time = time, tseistart = params$tseistart[i], SEI_max = params$SEI_max[i])) #run the log growth model function
+
+    sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
+    class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
+    
+    param.combo <- params$combo[i] #hold onto the unique parameter combo
+    
+    results <- createmodelspd(model = sim.growthModel.spd)#create simulated spd from simulate growth model, need to use just calBP and PrDens
+    results <- list(results, data.frame(sim.growthModel$SEI))
+    return(results)
+  }
+
+
+stopCluster(cl)
+
+#eval.results<- do.call('rbind.data.frame', g.model.res[[1:5]][1])
+
+#g.model.res[[2]][1]
+
+#for (i in 1:nsim) {
+#  if (length(g.model.res[[i]][[1]]) == 9) {
+#    g.model.res[[i]][[1]][,10:16013] <- NA
+#  }
+#}
+
+#make an empty data.frame to hold the model performance and simulated SPD results
+eval.results <- data.frame()
+
+for (i in 1:nsim) {
+  eval.results <- rbind(eval.results, g.model.res[[i]][[1]])
+}
+
+#record for each of the model setups, what SEI happened in each year in the params object
+for (i in 1:nsim) {
+  params[i,14:4014] <- t(g.model.res[[i]][[2]]) #save the SEI jump occuring in each year of the sequence
+}
+
+#write.csv(params, "./data/Model_parameter_setups.csv")
+#write.csv(eval.results, "./data/Model_results.csv")
+
+save(params, file = "./Output/GBModel_parameter_setups_test.RData")
+save(eval.results, file = "./Output/GBModel_results_test.RData")
+
+
+end_time <- Sys.time()
+
+run_time <- end_time - start_time
+run_time
+#write.csv(run_time, "./data/run_time_1000.csv")
+save(run_time, "./Output/run_time.RData")
 ```
 
 
-Select the top performing models
+Read in the saved output data
 ```{r}
-no.models.keep <- 3
+
+#load("./data/Model_parameter_setups.RData")
+#load("./data/Model_results.RData")
+
+eval.results <- read.csv("./data/Model_results.csv")
+eval.results <- eval.results[,-1]
+params <- read.csv("./data/Model_parameter_setups.csv")
+params <- params[,-1]
+nsim <- length(params$combo)#ensure we have number of similuations run included
+```
+
+We can plot (if we want) all of the model simulated SPDs - here providing the SPDs for normalised and not normalised model fits based upon the uncal and cal sampling functions for recreating SPDs from simulated population curves.
+```{r}
+#because there are a lot of models, let's not plot them all - let's just grab a sample - say the first 500
+
+library(viridis)
+par(oma=c(3,4,1,3))
+par(mfrow = c(2,2), pty = "s")
+par(mar=c(0.5,1.5,1.5,1.5))
+plot((t(eval.results[1,14:4014])) ~ seq(4000,0,-1), type = "l", ylab = "SPD Normalised", xlab = "", ylim = c(0,10e-04), main = "Uncal function", col = alpha(col = "grey40", alpha = 0.1), xaxt = "n")
+for(i in 1:8) {
+  lines((t(eval.results[i,14:4014])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "grey40", alpha = 0.25))
+}
+par(mar=c(0.5,1.5,1.5,1.5))
+plot((t(eval.results[1,8016:12016])) ~ seq(4000,0,-1), type = "l", ylab = "SPD Normalised", xlab = "", xaxt = "n", ylim = c(0,10e-04), main = "Cal function", col = alpha(col = "grey40", alpha = 0.1))
+for(i in 1:8) {
+  lines((t(eval.results[i,8016:12016])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "grey40", alpha = 0.25))
+}
+par(mar=c(1.5,1.5,0.5,1.5))
+plot((t(eval.results[1,4015:8015])) ~ seq(4000,0,-1), type = "l", ylab = "SPD Not Normalised", xlab = "yBP", ylim = c(0,10e-04), col = alpha(col = "grey40", alpha = 0.1))
+for(i in 1:8) {
+  lines((t(eval.results[i,4015:8015])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "grey40", alpha = 0.25))
+}
+par(mar=c(1.5,1.5,0.5,1.5))
+plot((t(eval.results[1,12017:16017])) ~ seq(4000,0,-1), type = "l", ylab = "SPD Not Normalised", xlab = "yBP", ylim = c(0,10e-04), col = alpha(col = "grey40", alpha = 0.1))
+for(i in 1:8) {
+  lines((t(eval.results[i,12017:16017])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "grey40", alpha = 0.25))
+}
+
+
+```
+
+We see that some models may be performing fairly well while others clearly do not do so. To investigate this further, we can select the top performing models based upon the various performance metrics.
+```{r}
+no.models.keep <- 50 #this is top 05% of models right now
 
 #get the top 5 performing models from each measure
-top.params.eucun <- eval.results[order(eval.results$euc.uncal.norm),][1:no.models.keep,]
-top.params.eucunn <- eval.results[order(eval.results$euc.uncal.nnorm),][1:no.models.keep,]
-top.params.ecun <- eval.results[order(eval.results$euc.cal.norm),][1:no.models.keep,]
-top.params.ecunn <- eval.results[order(eval.results$euc.cal.nnorm),][1:no.models.keep,]
-top.params.nrmseun <- eval.results[order(eval.results$nrmse.uncal.norm),][1:no.models.keep,]
-top.params.nrmseunn <- eval.results[order(eval.results$nrmse.uncal.nnorm),][1:no.models.keep,]
-top.params.nrmsecn <- eval.results[order(eval.results$nrmse.cal.norm),][1:no.models.keep,]
-top.params.nrmsecnn <- eval.results[order(eval.results$nrmse.cal.nnorm),][1:no.models.keep,]
+top.params.euc.un <- eval.results[order(eval.results$euc.uncal.norm),][1:no.models.keep,]
+top.params.euc.unn <- eval.results[order(eval.results$euc.uncal.nnorm),][1:no.models.keep,]
+top.params.euc.cn <- eval.results[order(eval.results$euc.cal.norm),][1:no.models.keep,]
+top.params.euc.cnn <- eval.results[order(eval.results$euc.cal.nnorm),][1:no.models.keep,]
+top.params.nrmse.un <- eval.results[order(eval.results$nrmse.uncal.norm),][1:no.models.keep,]
+top.params.nrmse.unn <- eval.results[order(eval.results$nrmse.uncal.nnorm),][1:no.models.keep,]
+top.params.nrmse.cn <- eval.results[order(eval.results$nrmse.cal.norm),][1:no.models.keep,]
+top.params.nrmse.cnn <- eval.results[order(eval.results$nrmse.cal.nnorm),][1:no.models.keep,]
+```
+
+
+Using the top performing models, let's plot them in relation to the average fit from the 1000 SPDS based on models fit using EUC.
+```{r}
+par(oma=c(3,4,1,3))
+par(mfrow = c(2,2), pty = "s")
+par(mar=c(0.5,1.5,1.5,1.5))
+plot(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Normalised", xlab = "", xaxt = "n", ylim = c(0,10e-04), main = "Uncal function", col = alpha(col = "black", alpha = 1))#in a black line plot the mean fit
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(top.params.euc.un[i,14:4014])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), col = "black")
+
+plot(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Normalised", xlab = "", xaxt = "n", ylim = c(0,10e-04), main = "Cal function", col = alpha(col = "black", alpha = 1))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 2:no.models.keep) {
+  lines((t(top.params.euc.cn[i,8016:12016])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), col = "black")
+legend("topright", legend = c("Avg. Obs. SPD", "Top Sim. SPDs"), col = c("black", "#CB1B4FFF"), lty = 1, cex = 0.75, bty = "n")
+
+plot(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Not Normalised", xlab = "yBP", ylim = c(0,10e-04), col = alpha(col = "black", alpha = 1))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 2:no.models.keep) {
+  lines((t(top.params.euc.unn[i,4015:8015])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), col = "black")
+
+plot(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Not Normalised", xlab = "yBP", ylim = c(0,10e-04), col = alpha(col = "black", alpha = 1))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 2:no.models.keep) {
+  lines((t(top.params.euc.cnn[i,12017:16017])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), col = "black")
+
+
+```
+
+So the figure above visualizes the top 5% (50 / 1000) of models matching the 1000 SPDs (orange lines) with the average value from the 1000 SPDs (black lines) we matched to. The grey shaded region is the temporal span to which matching occurred. 
+
+We can repeat for models fit using NRMSE.
+```{r}
+
+par(oma=c(3,4,1,3))
+par(mfrow = c(2,2), pty = "s")
+par(mar=c(0.5,1.5,1.5,1.5))
+plot(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Normalised", xlab = "", xaxt = "n", ylim = c(0,10e-04), main = "Uncal function", col = alpha(col = "black", alpha = 1))#in a black line plot the mean fit
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(top.params.nrmse.un[i,14:4014])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), col = "black")
+
+plot(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Normalised", xlab = "", xaxt = "n", ylim = c(0,10e-04), main = "Cal function", col = alpha(col = "black", alpha = 1))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 2:no.models.keep) {
+  lines((t(top.params.nrmse.cn[i,8016:12016])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.norm[,-1]) ~ seq(4000,0,-1), col = "black")
+legend("topright", legend = c("Avg. Obs. SPD", "Top Sim. SPDs"), col = c("black", "#CB1B4FFF"), lty = 1, cex = 0.75, bty = "n")
+
+plot(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Not Normalised", xlab = "yBP", ylim = c(0,10e-04), col = alpha(col = "black", alpha = 1))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 2:no.models.keep) {
+  lines((t(top.params.nrmse.unn[i,4015:8015])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), col = "black")
+
+plot(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), type = "l", ylab = "SPD Not Normalised", xlab = "yBP", ylim = c(0,10e-04), col = alpha(col = "black", alpha = 1))
+polygon(x = c(1000,1000,4000,4000), y = c(0,0.001,0.001,0), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 2:no.models.keep) {
+  lines((t(top.params.nrmse.cnn[i,12017:16017])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+lines(rowMeans(observed.spds.nnorm[,-1]) ~ seq(4000,0,-1), col = "black")
+
+
+```
+Repeat again but using the evaluation based upon matching to a spatial trajectory
+```{r}
+#do once get spatial trajectory code working
+```
+
+
+
+We might also want to view the model performance based on deviation. We can do this by plotting hte predicted model SPDs minus the mean of the matching SPDs. First, lets get the deviations for each year for each performance metric.
+```{r}
+mod.dev.euc.un <- top.params.euc.un[,14:4014] - rowMeans(observed.spds.norm[,-1])
+mod.dev.euc.cn <- top.params.euc.cn[,8016:12016] - rowMeans(observed.spds.norm[,-1])
+mod.dev.euc.unn <- top.params.euc.unn[,4015:8015] - rowMeans(observed.spds.nnorm[,-1])
+mod.dev.euc.cnn <- top.params.euc.cnn[,12017:16017] - rowMeans(observed.spds.nnorm[,-1])
+mod.dev.nrmse.un <- top.params.nrmse.un[,14:4014] - rowMeans(observed.spds.norm[,-1])
+mod.dev.nrmse.cn <- top.params.nrmse.cn[,8016:12016] - rowMeans(observed.spds.norm[,-1])
+mod.dev.nrmse.unn <- top.params.nrmse.unn[,4015:8015] - rowMeans(observed.spds.nnorm[,-1])
+mod.dev.nrmse.cnn <- top.params.nrmse.cnn[,12017:16017] - rowMeans(observed.spds.nnorm[,-1])
+```
+
+
+Then let's plot the deviations to look at where we may be systematically over or under-estimating SPD (relative population) when using euclidean distance.
+```{r}
+par(oma=c(3,4,1,3))
+par(mfrow = c(2,2), pty = "s")
+par(mar=c(0.5,1.5,1.5,1.5))
+plot(1, type = "n", xlab = "", xaxt = "n", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.euc.un[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+plot(1, type = "n", xlab = "", xaxt = "n", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.euc.cn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+plot(1, type = "n", xlab = "yBP", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.euc.unn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+plot(1, type = "n", xlab = "yBP", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.euc.cnn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+
+```
+
+Currently the best performing models are underperforming early in time and overperforming when we reach the period of population expansion.
+
+Repeat for nrmse.
+```{r}
+par(oma=c(3,4,1,3))
+par(mfrow = c(2,2), pty = "s")
+par(mar=c(0.5,1.5,1.5,1.5))
+plot(1, type = "n", xlab = "", xaxt = "n", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.nrmse.un[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+plot(1, type = "n", xlab = "", xaxt = "n", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.nrmse.cn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+plot(1, type = "n", xlab = "yBP", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.nrmse.unn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
+
+plot(1, type = "n", xlab = "yBP", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+for(i in 1:no.models.keep) {
+  lines((t(mod.dev.nrmse.cnn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+}
+abline(0,0, col = "black", lty = 2)
 
 ```
 
 
+Repeat for spatial trajectory match
+```{r}
+
+#do this once have the code and outputs
+
+# par(oma=c(3,4,1,3))
+# par(mfrow = c(2,2), pty = "s")
+# par(mar=c(0.5,1.5,1.5,1.5))
+# plot(1, type = "n", xlab = "", xaxt = "n", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+# polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+# for(i in 1:no.models.keep) {
+#   lines((t(mod.dev.nrmse.un[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+# }
+# abline(0,0, col = "black", lty = 2)
+# 
+# plot(1, type = "n", xlab = "", xaxt = "n", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+# polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+# for(i in 1:no.models.keep) {
+#   lines((t(mod.dev.nrmse.cn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+# }
+# abline(0,0, col = "black", lty = 2)
+# 
+# plot(1, type = "n", xlab = "yBP", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+# polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+# for(i in 1:no.models.keep) {
+#   lines((t(mod.dev.nrmse.unn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+# }
+# abline(0,0, col = "black", lty = 2)
+# 
+# plot(1, type = "n", xlab = "yBP", ylab = "SPD Normalised", xlim = c(0,4000), ylim = c(-0.001, 0.001))
+# polygon(x = c(1000,1000,4000,4000), y = c(-0.001,0.001,0.001,-0.001), col = alpha("grey", alpha = 0.5), border = NA)
+# for(i in 1:no.models.keep) {
+#   lines((t(mod.dev.nrmse.cnn[i,])) ~ seq(4000,0,-1), type = "l", col = alpha(col = "#CB1B4FFF", alpha = 0.25))
+# }
+# abline(0,0, col = "black", lty = 2)
+
+
+```
+
+
+With the selected best models we can also explore the new posterior distributions and their relationship to priors. We will do this in 3 manners: 1) Boxplot comparison of prior distributions to posterior distributions, 2) Density Plots, and 3) Kullback-Leibler Divergence (KLD) measure of divergence between probability distributions.
+
+Let's begin with the boxplots.
+```{r}
+#first grab the parameter values for the best combinations (we can do this for all of the performance metrics - here just do 1)
+best.params <- params[params$combo %in% top.params.euc.un$param.combo,]
+
+a.r <- data.frame('prior' = params$r)
+b.r <- data.frame('posterior' = best.params$r)
+
+a.cK0 <- data.frame('prior' = params$cK0)
+b.cK0 <- data.frame('posterior' = best.params$cK0)
+
+a.nppl <- data.frame('prior' = params$npp_lo)
+b.nppl <- data.frame('posterior' = best.params$npp_lo)
+
+a.npph <- data.frame('prior' = params$npp_hi)
+b.npph <- data.frame('posterior' = best.params$npp_hi)
+
+a.tsei <- data.frame('prior' = params$tseistart)
+b.tsei <- data.frame('posterior' = best.params$tseistart)
+
+a.seim <- data.frame('prior' = params$SEI_max)
+b.seim <- data.frame('posterior' = best.params$SEI_max)
+
+
+par(mfrow = c(2,3))
+boxplot(dplyr::bind_rows(a.r, b.r), ylab = "Growth Rate (r)")
+boxplot(dplyr::bind_rows(a.cK0, b.cK0), ylab = "Start Pop. (cK0)")
+boxplot(dplyr::bind_rows(a.nppl, b.nppl), ylab = "Min. NPP (npp_lo)")
+boxplot(dplyr::bind_rows(a.npph, b.npph), ylab = "Max. NPP (npp_hi)")
+boxplot(dplyr::bind_rows(a.tsei, b.tsei), ylab = "Year SEI Begins")
+boxplot(dplyr::bind_rows(a.seim, b.seim), ylab = "SEI Multiplier (SEI_max)")
+
+```
+
+Now let's make density plots.
+
+Reminder to self - density function = kernel density which is stacks of gaussians on all observations.
+
+First, let's estimate the bandwidths to use for the kernel densities and make the prior and posterior kde objects.
+```{r}
+#estimate best bandwidth for kernel density
+
+bw.df <- data.frame(r = bw.nrd(best.params$r), cK0 = bw.nrd(best.params$cK0), npp_lo = bw.nrd(best.params$npp_lo), npp_hi = bw.nrd(best.params$npp_hi), tseistart = bw.nrd(best.params$tseistart), SEI_Max = bw.nrd(best.params$SEI_max))
+
+prr.r <- density(params$r, from = min(params$r), to = max(params$r), bw = bw.df$r)#by using the same min and max (from and to) values for prior and posterior with the same bandwidth the densities become directly comparable
+pstr.r <- density(best.params$r, from = min(params$r), to = max(params$r), bw = bw.df$r)
+
+prr.cko <- density(params$cK0, from = min(params$cK0), to = max(params$cK0), bw = bw.df$cK0)
+pstr.cko <- density(best.params$cK0, from = min(params$cK0), to = max(params$cK0), bw = bw.df$cK0)
+
+prr.nppl <- density(params$npp_lo, from = min(params$npp_lo), to = max(params$npp_lo), bw = bw.df$npp_lo)
+pstr.nppl <- density(best.params$npp_lo, from = min(params$npp_lo), to = max(params$npp_lo), bw = bw.df$npp_lo)
+
+prr.npph <- density(params$npp_hi, from = min(params$npp_hi), to = max(params$npp_hi), bw = bw.df$npp_hi)
+pstr.npph <- density(best.params$npp_hi, from = min(params$npp_hi), to = max(params$npp_hi), bw = bw.df$npp_hi)
+
+prr.tsei <- density(params$tseistart, from = min(params$tseistart), to = max(params$tseistart), bw = bw.df$tseistart)
+pstr.tsei <- density(best.params$tseistart, from = min(params$tseistart), to = max(params$tseistart), bw = bw.df$tseistart)
+
+prr.seim <- density(params$SEI_max, from = min(params$SEI_max), to = max(params$SEI_max), bw = bw.df$SEI_Max)
+pstr.seim <- density(best.params$SEI_max, from = min(params$SEI_max), to = max(params$SEI_max), bw = bw.df$SEI_Max)
+```
+
+Now plot the prior and posterior density distributions
+```{r}
+par(mfrow = c(2,3), pty = "s")
+plot(prr.r, xlim = c(min(params$r), max(params$r)), ylim = c(0, max(pstr.r$y)), main = "", xlab = "Growth Rate (r)", col = alpha("#3B2F5EFF", alpha = 0))
+#polygon(prr.r, col = "grey")
+polygon(y = c(rep(0, length(prr.r$y)), rev(prr.r$y)), x = c(prr.r$x, rev(prr.r$x)), col = alpha("#3B2F5EFF", alpha = 0.25), border = NA)
+polygon(y = c(rep(0, length(pstr.r$y)), rev(pstr.r$y)), x = c(pstr.r$x, rev(pstr.r$x)), col = alpha("#A0DFB9FF", alpha = 0.75), border = NA)
+legend("topright", legend = c("Prior", "Posterior"), fill = c(alpha("#3B2F5EFF", alpha = 0.25), alpha("#A0DFB9FF", alpha = 0.75)), bty= "n",border = "NA", cex = 0.75)
+
+plot(prr.cko, xlim = c(min(params$cK0), max(params$cK0)), ylim = c(0, max(prr.cko$y)), main = "", xlab = "Start Pop.", col = alpha("#3B2F5EFF", alpha = 0))
+polygon(y = c(rep(0, length(prr.cko$y)), rev(prr.cko$y)), x = c(prr.cko$x, rev(prr.cko$x)), col = alpha("#3B2F5EFF", alpha = 0.25), border = NA)
+polygon(y = c(rep(0, length(pstr.cko$y)), rev(pstr.cko$y)), x = c(pstr.cko$x, rev(pstr.cko$x)), col = alpha("#A0DFB9FF", alpha = 0.75), border = NA)
+legend("topright", legend = c("Prior", "Posterior"), fill = c(alpha("#3B2F5EFF", alpha = 0.25), alpha("#A0DFB9FF", alpha = 0.75)), bty= "n",border = "NA", cex = 0.75)
+
+plot(prr.nppl, xlim = c(min(params$npp_lo), max(params$npp_lo)), ylim = c(0, max(pstr.nppl$y)), main = "", xlab = "Min. NPP", col = alpha("#3B2F5EFF", alpha = 0))
+polygon(y = c(rep(0, length(prr.nppl$y)), rev(prr.nppl$y)), x = c(prr.nppl$x, rev(prr.nppl$x)), col = alpha("#3B2F5EFF", alpha = 0.25), border = NA)
+polygon(y = c(rep(0, length(pstr.nppl$y)), rev(pstr.nppl$y)), x = c(pstr.nppl$x, rev(pstr.nppl$x)), col = alpha("#A0DFB9FF", alpha = 0.75), border = NA)
+legend("topright", legend = c("Prior", "Posterior"), fill = c(alpha("#3B2F5EFF", alpha = 0.25), alpha("#A0DFB9FF", alpha = 0.75)), bty= "n",border = "NA", cex = 0.75)
+
+plot(prr.npph, xlim = c(min(params$npp_hi), max(params$npp_hi)), ylim = c(0, max(prr.npph$y)), main = "", xlab = "Max. NPP", col = alpha("#3B2F5EFF", alpha = 0))
+polygon(y = c(rep(0, length(prr.npph$y)), rev(prr.npph$y)), x = c(prr.npph$x, rev(prr.npph$x)), col = alpha("#3B2F5EFF", alpha = 0.25), border = NA)
+polygon(y = c(rep(0, length(pstr.npph$y)), rev(pstr.npph$y)), x = c(pstr.npph$x, rev(pstr.npph$x)), col = alpha("#A0DFB9FF", alpha = 0.75), border = NA)
+legend("topleft", legend = c("Prior", "Posterior"), fill = c(alpha("#3B2F5EFF", alpha = 0.25), alpha("#A0DFB9FF", alpha = 0.75)), bty= "n",border = "NA", cex = 0.75)
+
+plot(prr.tsei, xlim = c(min(params$tseistart), max(params$tseistart)), ylim = c(0, max(pstr.tsei$y)), main = "", xlab = "Year SEI Begins", col = alpha("#3B2F5EFF", alpha = 0))
+polygon(y = c(rep(0, length(prr.tsei$y)), rev(prr.tsei$y)), x = c(prr.tsei$x, rev(prr.tsei$x)), col = alpha("#3B2F5EFF", alpha = 0.25), border = NA)
+polygon(y = c(rep(0, length(pstr.tsei$y)), rev(pstr.tsei$y)), x = c(pstr.tsei$x, rev(pstr.tsei$x)), col = alpha("#A0DFB9FF", alpha = 0.75), border = NA)
+legend("topright", legend = c("Prior", "Posterior"), fill = c(alpha("#3B2F5EFF", alpha = 0.25), alpha("#A0DFB9FF", alpha = 0.75)), bty= "n",border = "NA", cex = 0.75)
+
+plot(prr.seim, xlim = c(min(params$SEI_max), max(params$SEI_max)), ylim = c(0, max(pstr.seim$y)), main = "", xlab = "SEI Multiplier", col = alpha("#3B2F5EFF", alpha = 0))
+polygon(y = c(rep(0, length(prr.seim$y)), rev(prr.seim$y)), x = c(prr.seim$x, rev(prr.seim$x)), col = alpha("#3B2F5EFF", alpha = 0.25), border = NA)
+polygon(y = c(rep(0, length(pstr.seim$y)), rev(pstr.seim$y)), x = c(pstr.seim$x, rev(pstr.seim$x)), col = alpha("#A0DFB9FF", alpha = 0.75), border = NA)
+legend("topright", legend = c("Prior", "Posterior"), fill = c(alpha("#3B2F5EFF", alpha = 0.25), alpha("#A0DFB9FF", alpha = 0.75)), bty= "n", border = "NA", cex = 0.75)
+
+```
+
+
+With the density plots made we can also look at the KLD measures.
+
+Okay - I think I did the density plots correctly, but I'm not sure about the KLD or LPL.interval (one thing says this is preferred). Ask Simon
+
+For a KLD we need the probability densities to sum to 1 so as to have the exact same range.
+```{r}
+df.densities <- data.frame(r.prr = (prr.r$y / sum(prr.r$y)), r.pstr =  (pstr.r$y / sum(pstr.r$y)), ck0.prr = (prr.cko$y / sum(prr.cko$y)), ck0.pstr = (pstr.cko$y/sum(pstr.cko$y)), nppl.prr = (prr.nppl$y / sum(prr.nppl$y)), nppl.pstr = (pstr.nppl$y/sum(pstr.nppl$y)), npph.prr = (prr.npph$y / sum(prr.npph$y)), npph.pstr = (pstr.npph$y / sum(pstr.npph$y)), tsei.prr = (prr.tsei$y / sum(prr.tsei$y)), tsei.pstr = (pstr.tsei$y / sum(pstr.tsei$y)), seim.prr = (prr.seim$y / sum(prr.seim$y)), seim.pstr = (pstr.seim$y/sum(pstr.seim$y)))
+
+```
+Then run a KLD test. This is evaluating if the prior and posterior distributions are the same. Non-zero values indicate the distributions are different, with increasing KL values implying greater difference in distributions.
+```{r}
+#KLD with philentropy
+library(philentropy)
+growth.rate <- df.densities[,1:2]
+
+KL(rbind(df.densities$r.prr, df.densities$r.pstr))
+KL(rbind(df.densities$ck0.prr, df.densities$ck0.pstr))
+KL(rbind(df.densities$nppl.prr, df.densities$nppl.pstr))
+KL(rbind(df.densities$npph.prr, df.densities$npph.pstr))
+KL(rbind(df.densities$tsei.prr, df.densities$tsei.pstr))
+KL(rbind(df.densities$seim.prr, df.densities$seim.pstr))
+
+
+```
+
+
+Let's also check out the correlation between posterior probabilities using a correlation matrix. This will visualize if and how variables are related.
+```{r}
+
+#grab just the input variables
+pstr.inputs <- best.params[,c(2,3,5,6,7,8)]
+
+#Create a function for identifying collinearity among variables
+cor.mtest <- function(mat) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j])
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+
+#build a data frame of posterior variables
+pstr.vars<-with(pstr.inputs, 
+             data.frame(
+                    r, #growth rate
+                    cK0, #start pop
+                    npp_lo, #min NPP
+                    npp_hi, #max NPP
+                    tseistart, #year SEI may begin
+                    SEI_max #max SEI multiplier
+             )
+           )
+
+#then test collinearity
+cm<- cor(pstr.vars,
+         method="pearson",
+         use="pairwise.complete.obs")
+
+
+# matrix of the p-value of the correlation
+p.mat<-cor.mtest(pstr.vars)
+
+#plot the correlation matrix
+corrplot(cm,
+      method="color",
+      type="upper",
+      diag=FALSE,
+      bg="grey90",
+      addCoef.col = "black",
+      tl.col="black",
+      outline = FALSE,
+      addCoefasPercent=TRUE,
+      p.mat = p.mat, sig.level = 0.05, insig = "blank"
+  )
+
+
+```
+
+
+Now, let's pull the posterior probability distributions for the key input variables for these best performing models.
+```{r}
+#I'm going to try this just using the EUC measure first
+best.params.euc.un <- params[params$combo %in% top.params.euc.un$param.combo,]
+
+par(mfrow = c(2,3), pty = "s")
+par(mar=c(4,1.5,1.5,1.5))
+hist(params$r, main = "", xlab = "Growth Rate (r)")
+hist(best.params.euc.un$r, add = T, col = "#21908CFF")
+
+hist(params$cK0, main = "", xlab = "Starting Pop.")
+hist(best.params.euc.un$cK0, add = T, col = "#21908CFF")
+
+hist(params$npp_lo, main = "", xlab = "Min. NPP")
+hist(best.params.euc.un$npp_lo, add = T, col = "#21908CFF")
+
+hist(params$npp_hi, main = "", xlab = "Max. NPP")
+hist(best.params.euc.un$npp_hi, add = T, col = "#21908CFF")
+
+hist(params$tseistart, main = "", xlab = "Year SEI Begins")
+hist(best.params.euc.un$tseistart, add = T, col = "#21908CFF",xlim = c(1800,3500))
+
+hist(params$SEI_max, main = "", xlab = "SEI Multiplier on K")
+hist(best.params.euc.un$SEI_max, add = T, col = "#21908CFF")
+
+
+param.best.models <- data.frame(summary_stat = c("median", "stdrd dev"), r = c(median(best.params.euc.un$r), sd(best.params.euc.un$r)), Start_Pop = c(median(best.params.euc.un$cK0), sd(best.params.euc.un$cK0)), NPP_Lo = c(median(best.params.euc.un$npp_lo), sd(best.params.euc.un$npp_lo)), NPP_Hi = c(median(best.params.euc.un$npp_hi), sd(best.params.euc.un$npp_hi)), SEI_Yr_Begins = c(median(best.params.euc.un$tseistart), sd(best.params.euc.un$tseistart)), SEI_Influence = c(median(best.params.euc.un$SEI_max), sd(best.params.euc.un$SEI_max)))
+
+param.best.models
+```
+
+The other thing we might want to know is how many SEI events were simulated and their jump sizes
+```{r}
+
+#I wonder if this will need to be some sort of lapply thing where what I do is have each column in each row evaluate if it is the same value as the column that preceded it. If no, do nothing. If yes, add a plus 1 to a counter.
+
+###########################################Additional note: Given the tentative results above, do we want to now (or in future) a) allow SEI to impact r (not necessarily justified by literature) or maybe have some sort of death rate or something similar? b) Build in the function previously discussed for HNDS where say the proportion of SEI at the moment reduces (maybe proportionally) the amount of NPP that people can return to to capture collapse? c) Change the prior distributions of any of the variables?
+
+
+sei_years <- data.frame(t(best.params.euc.un[,14:4014]))
+
+rowSums(best.params.euc.un[,14:4014])
+
+
+sei_years$No_sei_events <- rowSums(sei_years > 0)
+
+table(sei_years$No_sei_events)
+
+rowSums(sei_years > 0)
+
+sei_years[which( > 0)]
+
+length(best.params.euc.un[1,14:4014][which(>0)])
+
+best.params.euc.un
+param.best.models$No_SEI_events <- t(best.params.euc.un[,10:4011])
+```
 
 *****************************************************************************
 CODE BELOW NEEDS TO BE UPDATED TO MATCH ABOVE AND INCORPORATE READING IN SET SEI JUMPS AT SPECIFIC YEARS
 *****************************************************************************
 
+```{r}
+observed.spds.norm[yrs.match.range,1]
+spd.uncalsample.norm$grid$calBP[yrs.match.range]
+model$CalBP[yrs.match.range]
+i <- 24
+```
+
 We can then rerun the model for just the best performing parameter combinations. Right now this code does not recreate SPDs, it just is making the model values. Next step will be to make the simulated SPDs in source code 05 and be able to use that to plot the output SPDs.
 ```{r}
 
 #first, select the parameter combinations of interest
-best.params <- params[params$combo %in% top.params.ecun$param.combo,]
+best.params <- params[params$combo %in% top.params.euc.un$param.combo,]
 #best.params <- rbind(best.params, params[params$combo %in% top.params.eucunn$param.combo,], params[params$combo %in% top.params.ecun$param.combo,],params[params$combo %in% top.params.ecunn$param.combo,],params[params$combo %in% top.params.nrmseun$param.combo,],params[params$combo %in% top.params.nrmseunn$param.combo,],params[params$combo %in% top.params.nrmsecn$param.combo,],params[params$combo %in% top.params.nrmsecnn$param.combo,])
 
 
