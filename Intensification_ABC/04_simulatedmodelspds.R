@@ -6,35 +6,29 @@ createmodelspd <- function(model) {
   if (any(is.na(model$PrDens)|is.nan(model$PrDens)|model$PrDens==Inf))
     
   {
-    return(data.frame(
-      #   calBP = seq(4000,0,-1),
-      # #  ucs.norm.calBP = seq(4000,0,-1),
-      #   ucs.norm.prdens = NA,
-      #  # ucs.nnorm.calBP = seq(4000,0,-1),
-      #   ucs.nnorm.prdens = NA,
-      #   #cs.norm.calBP = seq(4000,0,-1),
-      #   cs.norm.prdens = NA,
-      #   #cs.nnorm.calBP = seq(4000,0,-1),
-      #   cs.nnorm.prdens = NA,
-      param.combo = param.combo,
-      euc.uncal.norm = NA,
-      euc.uncal.nnorm = NA,
-      euc.cal.norm = NA,
-      euc.cal.nnorm = NA,
-      nrmse.uncal.norm = NA,
-      nrmse.uncal.nnorm = NA,
-      nrmse.cal.norm = NA,
-      nrmse.cal.nnorm = NA
-    ))
+    
+    mod.results.df <- data.frame(param.combo = param.combo,
+                                 euc.uncal.norm = NA,
+                                 euc.uncal.nnorm = NA,
+                                 euc.cal.norm = NA,
+                                 euc.cal.nnorm = NA,
+                                 nrmse.uncal.norm = NA,
+                                 nrmse.uncal.nnorm = NA,
+                                 nrmse.cal.norm = NA,
+                                 nrmse.cal.nnorm = NA)
+    mod.results.df[,14:16017] <- NA
+    
+    return(mod.results.df) 
+    
   }  
   
   #Now create spds from our model simulated data
   d <- uncalibrate(model, calCurves = 'intcal20', verbose = F)#uncalibrate the spd from the simulated growth model
-  n.samples <- allbins #line 34 is Dinappoli code - for use in CHPC we just use the set # not the length of allbins object
+  n.samples <- bins.use #line 34 is Dinappoli code - for use in CHPC we just use the set # not the length of allbins object
   #n.samples <- length(allbins)#we will sample the uncalibtrated dates equal to the unique bins
   
  # errors <- sample(dat_cal.Plat.norm$metadata$Error, size = n.samples, replace =TRUE) #generate date errors by sampling 
-  errors <- sample(Plateau.errors$Errors, size = n.samples, replace =TRUE) #generate date errors by sampling 
+  errors <- sample(region.errors, size = n.samples, replace =TRUE) #generate date errors by sampling 
   
   #from the observed errors of the actual dates
   uncal.samples <- sample(d$CRA, size = n.samples, prob = d$PrDens, replace = TRUE)#sample the n.samples (so # of dates) 
@@ -102,47 +96,123 @@ createmodelspd <- function(model) {
   euc.cal.nnorm <- colMeans(euc.cal.nnorm) 
   
   
-  #Compute the average normalised root mean square error for simulated spd vs all 1000 observed spd possibilities.
+  #Compute the average euclidean distance adapted with delta for simulated spd vs all 1000 observed spd possibilities.
   #We are performing matching only on the simulated years 4000 to 1000 yBP
-  nrmse.uncal.norm <- data.frame()
+  euc.delta.uncal.norm <- data.frame()
   for (i in 2:length(observed.spds.norm)) {
-    nrmse <- sqrt(sum((observed.spds.norm[yrs.match.range,i] - spd.uncalsample.norm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.norm[yrs.match.range,i])
-    nrmse.uncal.norm <- rbind(nrmse.uncal.norm, nrmse)
+    euc.delta <- sqrt(sum(((observed.spds.norm[yrs.match.range,i] - spd.uncalsample.norm$grid$PrDens[yrs.match.range]) / 
+                         (spd.uncalsample.norm$grid$PrDens[yrs.match.range] + delta.val))^2))
+    euc.delta.uncal.norm <- rbind(euc.delta.uncal.norm, euc.delta)
   }
-  nrmse.uncal.norm <- colMeans(nrmse.uncal.norm)
+  euc.delta.uncal.norm <- colMeans(euc.delta.uncal.norm)
   
-  nrmse.uncal.nnorm <- data.frame()
+  euc.delta.uncal.nnorm <- data.frame()
   for (i in 2:length(observed.spds.nnorm)) {
-    nrmse <- sqrt(sum((observed.spds.nnorm[yrs.match.range,i] - spd.uncalsample.nnorm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.nnorm[yrs.match.range,i])
-    nrmse.uncal.nnorm <- rbind(nrmse.uncal.nnorm, nrmse)
+    euc.delta <- sqrt(sum(((observed.spds.nnorm[yrs.match.range,i] - spd.uncalsample.nnorm$grid$PrDens[yrs.match.range]) / 
+                             (spd.uncalsample.nnorm$grid$PrDens[yrs.match.range] + delta.val))^2))
+    euc.delta.uncal.nnorm <- rbind(euc.delta.uncal.nnorm, euc.delta)
   }
-  nrmse.uncal.nnorm <- colMeans(nrmse.uncal.nnorm)
+  euc.delta.uncal.nnorm <- colMeans(euc.delta.uncal.nnorm)
   
-  nrmse.cal.norm <- data.frame()
+  euc.delta.cal.norm <- data.frame()
   for (i in 2:length(observed.spds.norm)) {
-    nrmse <- sqrt(sum((observed.spds.norm[yrs.match.range,i] - spd.calsample.norm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.norm[yrs.match.range,i])
-    nrmse.cal.norm <- rbind(nrmse.cal.norm, nrmse)
+    euc.delta <- sqrt(sum(((observed.spds.norm[yrs.match.range,i] - spd.calsample.norm$grid$PrDens[yrs.match.range]) / 
+                             (spd.calsample.norm$grid$PrDens[yrs.match.range] + delta.val))^2))
+    euc.delta.cal.norm <- rbind(euc.delta.cal.norm, euc.delta)
   }
-  nrmse.cal.norm <- colMeans(nrmse.cal.norm)
+  euc.delta.cal.norm <- colMeans(euc.delta.cal.norm)
   
-  nrmse.cal.nnorm <- data.frame()
+  euc.delta.cal.nnorm <- data.frame()
   for (i in 2:length(observed.spds.nnorm)) {
-    nrmse <- sqrt(sum((observed.spds.nnorm[yrs.match.range,i] - spd.calsample.nnorm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.nnorm[yrs.match.range,i])
-    nrmse.cal.nnorm <- rbind(nrmse.cal.nnorm, nrmse)
+    euc.delta <- sqrt(sum(((observed.spds.nnorm[yrs.match.range,i] - spd.calsample.nnorm$grid$PrDens[yrs.match.range]) / 
+                             (spd.calsample.nnorm$grid$PrDens[yrs.match.range] + delta.val))^2))
+    euc.delta.cal.nnorm <- rbind(euc.delta.cal.nnorm, euc.delta)
   }
-  nrmse.cal.nnorm <- colMeans(nrmse.cal.nnorm)
+  euc.delta.cal.nnorm <- colMeans(euc.delta.cal.nnorm)
+ 
   
-  #return a dataframe with the evaluation metrics included
-  return(data.frame(
-    param.combo = param.combo,
+  #Compute the average euclidean distance  weighted towards key years simulated spd vs all 1000 observed spd possibilities.
+  #We are performing matching only on the simulated years 4000 to 1000 yBP
+  euc.weighted.uncal.norm <- data.frame()
+  for (i in 2:length(observed.spds.norm)) {
+   euc.weighted <-  sqrt((1/sum(weights.vec) *
+                       (sum(
+                         weights.vec[i] * (observed.spds.norm[yrs.match.range,i] - spd.uncalsample.norm$grid$PrDens[yrs.match.range])^2
+                        ))
+                      )
+                    )
+   euc.weighted.uncal.norm <- rbind(euc.weighted.uncal.norm, euc.weighted)
+  }
+  euc.weighted.uncal.norm <- colMeans(euc.weighted.uncal.norm)
+  
+  euc.weighted.uncal.nnorm <- data.frame()
+  for (i in 2:length(observed.spds.nnorm)) {
+    euc.weighted <-  sqrt((1/sum(weights.vec) *
+                             (sum(
+                               weights.vec[i] * (observed.spds.nnorm[yrs.match.range,i] - spd.uncalsample.nnorm$grid$PrDens[yrs.match.range])^2
+                             ))
+    )
+    )
+    euc.weighted.uncal.nnorm <- rbind(euc.weighted.uncal.nnorm, euc.weighted)
+  }
+  euc.weighted.uncal.nnorm <- colMeans(euc.weighted.uncal.nnorm)
+  
+  euc.weighted.cal.norm <- data.frame()
+  for (i in 2:length(observed.spds.norm)) {
+    euc.weighted <-  sqrt((1/sum(weights.vec) *
+                             (sum(
+                               weights.vec[i] * (observed.spds.norm[yrs.match.range,i] - spd.calsample.norm$grid$PrDens[yrs.match.range])^2
+                             ))
+    )
+    )
+    euc.weighted.cal.norm <- rbind(euc.weighted.cal.norm, euc.weighted)
+  }
+  euc.weighted.cal.norm <- colMeans(euc.weighted.cal.norm)
+  
+  euc.weighted.cal.nnorm <- data.frame()
+  for (i in 2:length(observed.spds.nnorm)) {
+    euc.weighted <-  sqrt((1/sum(weights.vec) *
+                             (sum(
+                               weights.vec[i] * (observed.spds.nnorm[yrs.match.range,i] - spd.calsample.nnorm$grid$PrDens[yrs.match.range])^2
+                             ))
+    )
+    )
+    euc.weighted.cal.nnorm <- rbind(euc.weighted.cal.nnorm, euc.weighted)
+  }
+  euc.weighted.cal.nnorm <- colMeans(euc.weighted.cal.nnorm)
+  
+  
+  mod.results.df <- data.frame(param.combo = param.combo,
     euc.uncal.norm = euc.uncal.norm,
     euc.uncal.nnorm = euc.uncal.nnorm,
     euc.cal.norm = euc.cal.norm,
     euc.cal.nnorm = euc.cal.nnorm,
-    nrmse.uncal.norm = nrmse.uncal.norm,
-    nrmse.uncal.nnorm = nrmse.uncal.nnorm,
-    nrmse.cal.norm = nrmse.cal.norm,
-    nrmse.cal.nnorm = nrmse.cal.nnorm
+    euc.delta.uncal.norm = euc.delta.uncal.norm,
+    euc.delta.uncal.nnorm = euc.delta.uncal.nnorm,
+    euc.delta.cal.norm = euc.delta.cal.norm,
+    euc.delta.cal.nnorm = euc.delta.cal.nnorm,
+    euc.weighted.uncal.norm = euc.weighted.uncal.norm,
+    euc.weighted.uncal.nnorm = euc.weighted.uncal.nnorm,
+    euc.weighted.cal.norm = euc.weighted.cal.norm,
+    euc.weighted.cal.nnorm = euc.weighted.cal.nnorm)
+  mod.results.df[,14:4014] <- spd.uncalsample.norm$grid$PrDens
+  mod.results.df[,4015:8015] <- spd.uncalsample.nnorm$grid$PrDens
+  mod.results.df[,8016:12016] <- spd.calsample.norm$grid$PrDens
+  mod.results.df[,12017:16017] <- spd.calsample.nnorm$grid$PrDens
+ 
+  return(mod.results.df) 
+  
+  #return a dataframe with the evaluation metrics included
+#  return(data.frame(
+#    param.combo = param.combo,
+#    euc.uncal.norm = euc.uncal.norm,
+#    euc.uncal.nnorm = euc.uncal.nnorm,
+#    euc.cal.norm = euc.cal.norm,
+#    euc.cal.nnorm = euc.cal.nnorm,
+#    nrmse.uncal.norm = nrmse.uncal.norm,
+#    nrmse.uncal.nnorm = nrmse.uncal.nnorm,
+#    nrmse.cal.norm = nrmse.cal.norm,
+#    nrmse.cal.nnorm = nrmse.cal.nnorm
     
     #code below would make an output containing all the spds, not just the distance evaluation metrics
     #calBP = seq(4000,0,-1),
@@ -154,6 +224,37 @@ createmodelspd <- function(model) {
     #cs.norm.prdens = spd.calsample.norm$grid$PrDens,
     #cs.nnorm.calBP = spd.calsample.nnorm$grid$calBP,
     #cs.nnorm.prdens = spd.calsample.nnorm$grid$PrDens,
-  ))
+  ##))
   
 }
+
+####CODE BELOW WOULD ENABLE COMPUTATION OF NRMSE FOR PATTERN MATCHING
+# #Compute the average normalised root mean square error for simulated spd vs all 1000 observed spd possibilities.
+# #We are performing matching only on the simulated years 4000 to 1000 yBP
+# nrmse.uncal.norm <- data.frame()
+# for (i in 2:length(observed.spds.norm)) {
+#   nrmse <- sqrt(sum((observed.spds.norm[yrs.match.range,i] - spd.uncalsample.norm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.norm[yrs.match.range,i])
+#   nrmse.uncal.norm <- rbind(nrmse.uncal.norm, nrmse)
+# }
+# nrmse.uncal.norm <- colMeans(nrmse.uncal.norm)
+# 
+# nrmse.uncal.nnorm <- data.frame()
+# for (i in 2:length(observed.spds.nnorm)) {
+#   nrmse <- sqrt(sum((observed.spds.nnorm[yrs.match.range,i] - spd.uncalsample.nnorm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.nnorm[yrs.match.range,i])
+#   nrmse.uncal.nnorm <- rbind(nrmse.uncal.nnorm, nrmse)
+# }
+# nrmse.uncal.nnorm <- colMeans(nrmse.uncal.nnorm)
+# 
+# nrmse.cal.norm <- data.frame()
+# for (i in 2:length(observed.spds.norm)) {
+#   nrmse <- sqrt(sum((observed.spds.norm[yrs.match.range,i] - spd.calsample.norm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.norm[yrs.match.range,i])
+#   nrmse.cal.norm <- rbind(nrmse.cal.norm, nrmse)
+# }
+# nrmse.cal.norm <- colMeans(nrmse.cal.norm)
+# 
+# nrmse.cal.nnorm <- data.frame()
+# for (i in 2:length(observed.spds.nnorm)) {
+#   nrmse <- sqrt(sum((observed.spds.nnorm[yrs.match.range,i] - spd.calsample.nnorm$grid$PrDens[yrs.match.range])^2) / length(model$CalBP[yrs.match.range])) / sd(observed.spds.nnorm[yrs.match.range,i])
+#   nrmse.cal.nnorm <- rbind(nrmse.cal.nnorm, nrmse)
+# }
+# nrmse.cal.nnorm <- colMeans(nrmse.cal.nnorm)

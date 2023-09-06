@@ -139,6 +139,8 @@ delta.val <- cp.delta
     sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
     class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
     
+    sim.growthModel.spd <- to_arrow_table(sim.growthModel.spd)#translate the calGrid object to an arrow table to speed up computation
+    
     results <- createmodelspd(model = sim.growthModel.spd)
     params[,9:4009] <- sim.growthModel$SEI
     

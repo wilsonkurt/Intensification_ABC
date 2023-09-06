@@ -1,0 +1,250 @@
+---
+title: "CHPC_Code"
+author: "Kurt Wilson"
+date: "2023-05-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the libraries and source code files
+
+```{r}
+
+library(spatstat.utils)
+library(doParallel)#parallel processing
+library(doSNOW)#parallel processing
+library(rcarbon)#14c date calibration and spd recreation
+library(foreach)
+library(truncnorm)#used in making prior probability distribution of r
+
+source("03_loggrowthmodel.R")#creates and enables the log growth function for simulation
+source("04_simulatedmodelspds.R")#generates SPDs from the simulated population dynamic
+```
+
+Read in the data for model development
+```{r}
+#read in the climate data for the Colorado Plateau
+pla.clim.df <- read.csv("./data/pla.clim.df.csv")#read the 4ka climate data with npp calculated using Miami model
+pla.clim.df <- approx(pla.clim.df$year, pla.clim.df$npp, xout = seq(4000,0,-1))#interpolate npp between each of the decadal reconstructions for annual resolution
+pla.clim.df <- data.frame(age = pla.clim.df$x, npp = pla.clim.df$y)
+
+#repeat for Great Basin
+bas.clim.df <- read.csv("./data/bas.clim.df.csv")#read the 4ka climate data with npp calculated using Miami model
+bas.clim.df <- approx(bas.clim.df$year, bas.clim.df$npp, xout = seq(4000,0,-1))#interpolate npp between each of the decadal reconstructions for annual resolution
+bas.clim.df <- data.frame(age = bas.clim.df$x, npp = bas.clim.df$y)
+
+#read in the saved spds
+observed.spds.plat <- read.csv("./data/Observed_spds_Plateau.csv")
+observed.spds.plat.norm <- observed.spds.plat[,c(1,seq(2,2000,2))]#grab the normalized spds and put in own object
+observed.spds.plat.nnorm <- observed.spds.plat[,c(1,seq(3,2001,2))]#make a df for the not normalized spds
+
+observed.spds.basin <- read.csv("./data/Observed_spds_Basin.csv")
+observed.spds.basin.norm <- observed.spds.basin[,c(1,seq(2,2000,2))]#grab the normalized spds and put in own object
+observed.spds.basin.nnorm <- observed.spds.basin[,c(1,seq(3,2001,2))]#make a df for the not normalized spds
+
+#read in the errors for use in simulated spds
+Plateau.errors <- read.csv("./data/Plateau_errors.csv")
+Basin.errors <- read.csv("./data/Basin_errors.csv")
+
+#set the number of bins per region
+allbins <- 3192 #this is the # unique sites/bins for Plateau dates 4000 ybp and younger
+allbins.basin <- 1364 #this is the # unique sites/bins for Basin dates 4000 ybp and younger
+
+#set the number of years (equating to time period) for model matching (here using 4000 to 1000 ybp - see below)
+yrs.match.range <- 1:3001
+
+```
+
+For one of the distance metrics we use a delta value to de-emphasize small jumps in the SPD in favor of matching to larger movements (which are likely to be more indicative of true relative population change). For the initial work the delta value is 5% of the mean spd.
+```{r}
+plat.spd.avgs <- data.frame(year = observed.spds.plat.norm$calBP, spd.avg = rowMeans(observed.spds.plat.norm[,2:1001]))
+cp.delta <- mean(plat.spd.avgs[,2]) * 0.05
+
+bas.spd.avgs <- data.frame(year = observed.spds.basin.norm$calBP, spd.avg = rowMeans(observed.spds.basin.norm[,2:1001]))
+gb.delta <- mean(bas.spd.avgs[,2]) * 0.05
+```
+
+For the third distance metric we weight toward the latter half of the temporal sequence. For ease in calculation create a vector with weights.
+```{r}
+weights.vec <- c(rep(1, times = 1500), rep(10, times = 1500))
+```
+
+Establish parameter combinations
+```{r}
+
+#Globals
+nsim <- 16 #set the number of parameter combinations to use
+tstart <- 4000 #set the beginning of the simulation to be 4000 yBP
+
+#Landscape variables
+npp_lo <- vector()#a vector to hold the npp min threshold for any population to be present
+npp_hi <- vector()#a vector to hold the npp max threshold over which no increase in k occurs (unless by intensification)
+for (i in 1:nsim) {
+  npp_limits <- sort(runif(2, min = 0.17, max = 1.02))#grab 2 npp values to be low and high and sort from low to high
+  #the min npp during our study period is 0.4763764 while the max is 0.7187248 We therefore randomly sample from values below the min to above the max. Min npp represents the min npp needed to support at least some population. Max represents the npp value at which the maximum k (without intensification) is reached. Any npp above that is essentially unusable by the population and doesn't result in larger k.
+  npp_lo <- append(npp_lo, npp_limits[1])  
+  npp_hi <- append(npp_hi, npp_limits[2])
+}
+
+#Intensification variables
+tseistart <- round(runif(nsim, min = 1800, max = 3500))#select the year in which intensification will begin
+SEI_max <- (rexp(nsim, 0.10)) #distribution produces a right skewed distribution with a mean ~10 and a tail up to ~60 (comparable to the ethnographic cross-cultural estimate of magnitude of population density difference from WNAI for agr vs non-agr groups)
+K_m <- 1 #this is the intensification constant applied to K_t on each time step. It is 1 b/c prior to SEI beginning, there is no SEI effect on K_t. But once SEI begins, it is a multiplier, so 1 + SEI at that moment will add to k.
+
+#Population variables
+cK0 <- rexp(nsim, rate = 20)#set a starting population as a proportion of Kmax
+r <- rtruncnorm(n=nsim,a=0.0001,b=0.5,mean=0.04,sd=0.1)#set a population growth rate. Mean 0.04 from Zahid et al 2016 and Page et al. 2016.
+#Range enables sampling across other estimates in published lit and from DiNappoli and Porcic ABC papers.
+Kmax <- 1 #hold Kmax constant at a value of 1, with only SEI allowed to push population beyond that amount
+#Kmax <- exp(runif(nsim, min = log(100), max = log(10000)))#set a maximum carrying capacity
+
+#make a dataframe to hold nsim parameter combinations
+params <- data.frame(tstart = tstart, r = r, cK0 = cK0, Kmax = Kmax, npp_lo = npp_lo, npp_hi = npp_hi, tseistart = tseistart, SEI_max = SEI_max)
+
+params$combo <- 1:length(params$tstart)#set a unique parameter combination number so we can link outcomes to initial param values
+params[,10:4010] <- NA
+colnames(params) <- c(colnames(params[,1:9]), seq(4000,0,-1))
+
+idCounter <- 0
+
+```
+
+Run the model and generate the distance measure outputs
+```{r}
+start_time <- Sys.time()
+
+#setup for parallel processing & tracking progress - Colorado Plateau simulations
+ncores <- 8
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+ #pb <- txtProgressBar(max = nsim, style = 3)
+#progress <- function(n) setTxtProgressBar(pb, n)
+#opts <- list(progress = progress)
+
+#set objects to be used in pattern matching to plateau data
+region.errors <- Plateau.errors$Errors
+bins.use <- allbins
+observed.spds.norm <- observed.spds.plat.norm
+observed.spds.nnorm <- observed.spds.plat.nnorm
+delta.val <- cp.delta
+
+g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon") %dopar%
+  {
+
+    #establish npp boundary conditions
+    npp.conds <- data.frame(npp = c(params$npp_lo[i], params$npp_hi[i], max(pla.clim.df$npp)),
+                      K = c(0, params$Kmax[i], params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
+    
+    ## Derive time-dependent K
+    ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
+    ## First filter climate to tstart
+    clim.df.run <- pla.clim.df[pla.clim.df$age <= tstart & pla.clim.df$age >= 0,] #get climate data from 4000 to 0 yBP
+    time <- clim.df.run$age
+    #time <- max(clim.df$age) - clim.df$age## Need to invert time
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df.run$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp from our climate reconstruction. This gives us the carrying capacity at each time step w/out any SEI occurring.
+    K_t[is.na(K_t)] <- 0 #Make sure any periods where popluation should fall to 0 are 0s and not NAs
+    
+    set.seed(i)
+    sim.growthModel <- data.frame(log_growth_t(N0 = params$cK0[i], r = params$r[i], K = K_t, K_m = K_m, time = time, tseistart = params$tseistart[i], SEI_max = params$SEI_max[i])) #run the log growth model function
+
+    sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
+    class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
+    
+    param.combo <- params$combo[i] #hold onto the unique parameter combo
+    
+    results <- createmodelspd(model = sim.growthModel.spd)#create simulated spd from simulate growth model, need to use just calBP and PrDens
+    results <- list(results, data.frame(sim.growthModel$SEI))
+    return(results)
+  }
+
+
+stopCluster(cl)
+
+#make an empty data.frame to hold the model performance and simulated SPD results
+eval.results <- data.frame()
+
+for (i in 1:nsim) {
+  cp.eval.results <- rbind(eval.results, g.model.res[[i]][[1]])
+}
+
+#record for each of the model setups, what SEI happened in each year in the params object
+for (i in 1:nsim) {
+  params[i,10:4010] <- t(g.model.res[[i]][[2]]) #save the SEI jump occurring in each year of the sequence
+}
+
+
+save(params, file = "./Output/CP_Model_parameter_setups_test.RData")
+save(cp.eval.results, file = "./Output/CP_Model_results_test.RData")
+
+
+#setup for parallel processing & tracking progress - Great Basin simulations
+ncores <- 8
+cl <- makeCluster(ncores)
+registerDoSNOW(cl)
+ #pb <- txtProgressBar(max = nsim, style = 3)
+#progress <- function(n) setTxtProgressBar(pb, n)
+#opts <- list(progress = progress)
+
+#set objects to be used in pattern matching to basin data
+region.errors <- Basin.errors$Errors
+bins.use <- allbins.basin
+observed.spds.norm <- observed.spds.basin.norm
+observed.spds.nnorm <- observed.spds.basin.nnorm
+delta.val <- gb.delta
+
+g.model.res <- foreach(i = 1:nsim, .packages = "rcarbon") %dopar%
+  {
+
+    #establish npp boundary conditions
+    npp.conds <- data.frame(npp = c(params$npp_lo[i], params$npp_hi[i], max(bas.clim.df$npp)),
+                      K = c(0, params$Kmax[i], params$Kmax[i])) #dataframe where k at npp_lo = 0 (min threshold for population survival - anything at or below this will have a k of 0), at npp_hi = max k, and at highest observed npp = maxk - this is all used below for the npp to k relationship for the model run
+    
+    ## Derive time-dependent K
+    ## this will give us k at each time step (or at least k without any impact of SEI - so k based on npp)
+    ## First filter climate to tstart
+    clim.df.run <- bas.clim.df[bas.clim.df$age <= tstart & bas.clim.df$age >= 0,] #get climate data from 4000 to 0 yBP
+    time <- clim.df.run$age
+    #time <- max(clim.df$age) - clim.df$age## Need to invert time
+    K_t <- approx(npp.conds$npp, npp.conds$K, clim.df.run$npp)$y #get a list of interpolated points connecting npp and k at each observation of npp from our climate reconstruction. This gives us the carrying capacity at each time step w/out any SEI occurring.
+    K_t[is.na(K_t)] <- 0 #Make sure any periods where popluation should fall to 0 are 0s and not NAs
+    
+    set.seed(i)
+    sim.growthModel <- data.frame(log_growth_t(N0 = params$cK0[i], r = params$r[i], K = K_t, K_m = K_m, time = time, tseistart = params$tseistart[i], SEI_max = params$SEI_max[i])) #run the log growth model function
+
+    sim.growthModel.spd <- sim.growthModel[c(1,4)] #select year and simulated PrDens for the calgrid object
+    class(sim.growthModel.spd) <- 'CalGrid' #change to a calgrid object
+    
+    param.combo <- params$combo[i] #hold onto the unique parameter combo
+    
+    results <- createmodelspd(model = sim.growthModel.spd)#create simulated spd from simulate growth model, need to use just calBP and PrDens
+    results <- list(results, data.frame(sim.growthModel$SEI))
+    return(results)
+  }
+
+
+stopCluster(cl)
+
+#make an empty data.frame to hold the model performance and simulated SPD results
+eval.results <- data.frame()
+
+for (i in 1:nsim) {
+  gb.eval.results <- rbind(eval.results, g.model.res[[i]][[1]])
+}
+
+#record for each of the model setups, what SEI happened in each year in the params object
+for (i in 1:nsim) {
+  params[i,10:4010] <- t(g.model.res[[i]][[2]]) #save the SEI jump occurring in each year of the sequence
+}
+
+
+save(params, file = "./Output/GB_Model_parameter_setups_test.RData")
+save(gb.eval.results, file = "./Output/GB_Model_results_test.RData")
+
+end_time <- Sys.time()
+run_time <- end_time - start_time
+run_time
+```
+

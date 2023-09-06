@@ -47,6 +47,10 @@ log_growth_t <- function(N0, r, K, time, tseistart, K_m, SEI_max) {
     #the ifelse controls for if carrying capacity (k) is 0, population should get set to 0 rather than -inf which happens with a division by 0
     #error in the log growth code
     
+    if (N_t[j] < 0) {N_t[j] <- 0} #if population collapse occurs and populations would go negative (happens in some simulations) this essentially
+    #represents a population overextending itself and being too large to survive the subsequent climate induced k change
+    #rather than record less than 0 which then cascades into an infinite negative and NA value, just consider this 0 population.
+    
     SEI_year[j] <- if (SEI_now == 0) {SEI_now} else {(SEI_now + 1)} #record the SEI that happened this year adding + 1 if SEI happened
     #to record if the multiplier is greater than 1.
   }
